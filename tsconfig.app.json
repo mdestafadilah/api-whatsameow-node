@@ -25,5 +25,17 @@
       "@/*": ["./src/*"]
     }
   },
-  "include": ["src/routes", "src/services", "src/components", "src/lib/http.ts", "src/types", "src/main.tsx", "src/vite-env.d.ts", "src/routeTree.gen.ts"]
+  "include": [
+    "src/routes",
+    "src/services",
+    "src/components",
+    "src/lib/http.ts",
+    "src/lib/cn.ts",
+    "src/lib/queryKeys.ts",
+    "src/lib/auth",
+    "src/types",
+    "src/main.tsx",
+    "src/vite-env.d.ts",
+    "src/routeTree.gen.ts"
+  ]
 }

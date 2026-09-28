@@ -27,5 +27,17 @@
       "@/*": ["./src/*"]
     }
   },
-  "include": ["src/api", "src/database", "src/lib/whatsapp", "src/types", "src/server.ts", "src/env.ts", "tests"]
+  // `src/vite-env.d.ts` is listed because `tests/` imports client modules
+  // (the auth store reads `import.meta.env`), and the env declarations have to
+  // be visible to whichever project compiles them.
+  "include": [
+    "src/api",
+    "src/database",
+    "src/lib/whatsapp",
+    "src/types",
+    "src/server.ts",
+    "src/env.ts",
+    "src/vite-env.d.ts",
+    "tests"
+  ]
 }

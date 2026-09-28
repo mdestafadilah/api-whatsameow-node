@@ -244,6 +244,34 @@ If you set `API_KEY`, the dashboard needs it too. Create `.env.local`:
 VITE_API_KEY=your-key-here
 ```
 
+### Dashboard sign-in
+
+The dashboard sits behind a login screen at `/login`. Any other URL redirects
+there, remembering where you were headed, and returns you afterwards:
+
+```
+/                → /login?redirect=/
+/sessions/abc    → /login?redirect=/sessions/abc
+```
+
+Credentials are build-time values, so they belong in `.env.local` next to the
+API key:
+
+```
+VITE_DASHBOARD_USERNAME=admin
+VITE_DASHBOARD_PASSWORD=change-me
+```
+
+With no `VITE_DASHBOARD_PASSWORD` set, the app falls back to `admin` / `admin`
+and the login screen shows a warning banner. A sign-in lasts 12 hours and is
+stored in `localStorage`; "Sign out" in the header clears it.
+
+> **This is a UI gate, not a security boundary.** The values are compiled into
+> the JavaScript bundle, so anyone who can load the dashboard can read them —
+> and the REST API answers with or without a login, exactly as before. It keeps
+> casual visitors out of the dashboard; it does not protect the API. That
+> protection is `API_KEY`, and only `API_KEY`.
+
 ---
 
 ## API reference
@@ -427,10 +455,24 @@ src/
 │   ├── schema.ts
 │   └── repositories/
 ├── routes/                 # React pages (TanStack Router, file-based)
-├── services/               # client-side API layer
+│   ├── __root.tsx          # outlet + devtools, nothing else
+│   ├── login.tsx           # public sign-in screen
+│   ├── _authenticated.tsx  # pathless layout: beforeLoad guard + app header
+│   └── _authenticated/     # every page behind the guard
+│       ├── index.tsx       #   session list  (/)
+│       └── sessions.$sessionId.tsx
 ├── components/
+│   ├── ui/                 # Button, Field, Card, Alert, ConfirmDialog, …
+│   ├── dashboard/          # session list pieces
+│   └── sessions/           # session detail panels
+├── lib/auth/               # client-side sign-in gate (store, hook, guard)
+├── services/               # client-side API layer
 ├── types/
 └── server.ts               # bootstrap
+```
+
+**Adding a page:** drop a file in `src/routes/_authenticated/`. It inherits the
+sign-in guard and the header automatically; only `/login` is public.
 
 docs/
 ├── API.md                  # full endpoint reference
@@ -478,9 +520,14 @@ launched it.
 
 Verified end to end on Windows 11, under **Bun 1.3.14** and **Node 22.22.2**:
 
-- `bun test` — 73 unit tests pass
+- `bun test` — 87 unit tests pass
 - `bun run typecheck` — clean across both projects
 - `npm run build` — client and server bundles emit
+- The sign-in gate is asserted against the real generated route tree, not a mock
+  (`tests/routing.test.ts`, 5 cases): an anonymous visit to `/` or
+  `/sessions/:id` lands on `/login` carrying the original path as `?redirect=`,
+  a signed-in visit renders the dashboard, `/login` bounces a signed-in user
+  back to `/`, and signing out returns to `/login`
 - Server boots under both runtimes, `/api/sessions/health` returns `ok`
 - Both runtimes read the same SQLite file — a session created under Bun is
   visible after a restart under Node
@@ -526,6 +573,10 @@ newest-first, so the drain order cannot be expressed as a range slice).
 
 - **Auth is off by default.** Set `API_KEY` before exposing this beyond localhost.
   The server enforces this in production.
+- **The dashboard login is not API auth.** `/login` is a client-side gate; its
+  credentials ship inside the bundle. It keeps casual visitors off the
+  dashboard, but every REST endpoint still answers to whoever holds the
+  `API_KEY` — and to anyone at all when `API_KEY` is empty.
 - **Session stores are live credentials.** `data/` is gitignored. Anyone with
   `data/sessions/*.db` can act as the linked account — treat it like a password,
   and pair a spare number rather than a personal one.

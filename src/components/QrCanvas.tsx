@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import QRCode from "qrcode";
-import { Copy, Check, RefreshCw } from "lucide-react";
+import { RefreshCw } from "lucide-react";
 
 /**
  * Renders the pairing QR locally.
@@ -60,33 +60,5 @@ export function QrCanvas({ value, size = 240 }: { value: string; size?: number }
       alt="WhatsApp pairing QR code"
       className="rounded-xl border border-slate-200 bg-white p-2"
     />
-  );
-}
-
-/** Copy-to-clipboard control used for pairing codes and JIDs. */
-export function CopyButton({ value, label }: { value: string; label?: string }) {
-  const [copied, setCopied] = useState(false);
-
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(value);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1600);
-    } catch {
-      // Clipboard is unavailable over plain HTTP on some hosts; the value stays
-      // selectable in the DOM so the user can copy manually.
-    }
-  };
-
-  return (
-    <button
-      type="button"
-      onClick={copy}
-      className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800"
-      title="Copy to clipboard"
-    >
-      {copied ? <Check className="h-3.5 w-3.5 text-brand-600" /> : <Copy className="h-3.5 w-3.5" />}
-      {label ?? (copied ? "Copied" : "Copy")}
-    </button>
   );
 }
