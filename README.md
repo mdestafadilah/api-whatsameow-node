@@ -29,10 +29,11 @@ over stdin/stdout IPC. It spawns one native Go binary per client, which means:
 | **Pairing** | QR code **and** pairing code (phone number) |
 | **Connection** | connect, disconnect, logout/unlink |
 | **Messages** | text, media (image/video/audio/document), location, contact, poll, raw, reply, react, edit, revoke, mark read |
+| **Send pacing** | human-like typing indicator + delay, four presets, per-chat cooldown |
 | **Chats** | typing indicator, presence, privacy settings, blocklist, disappearing messages, status message, contact QR |
 | **Contacts** | `isOnWhatsApp` check, profile picture, user info, devices, business profile |
 | **Groups** | list, create, info, invite links, join/leave, settings, add/remove/promote/demote, join requests |
-| **Misc** | health, generic IPC escape hatch, message ids, media upload/download |
+| **Misc** | health, pacing presets, generic IPC escape hatch, message ids, media upload/download |
 | **Events** | live Server-Sent Events stream of every gateway event |
 
 ---
@@ -176,6 +177,54 @@ curl -X POST http://localhost:3000/api/sessions/<id>/messages \
 `to` accepts a bare phone number (country code, no `+`) or a full JID
 (`1234@g.us` for groups).
 
+#### Send pacing (anti-ban)
+
+Every outgoing message is paced by default. Before the message is sent the
+session shows a **typing…** indicator, waits an amount of time proportional to
+how long a person would need to type the text, and only then sends. Messages to
+the same chat are also spaced apart by a cooldown.
+
+Timing is deliberately random within a band — uniform intervals are themselves a
+bot signal.
+
+| Preset | Typing | Base pause | Per character | Cap | Chat cooldown |
+|---|---|---|---|---|---|
+| `off` | no | — | — | — | — |
+| `fast` | yes | 400 ms | 12 ms | 2.5 s | 250 ms |
+| `natural` *(default)* | yes | 900 ms | 45 ms | 8 s | 1.2 s |
+| `cautious` | yes | 2.5 s | 80 ms | 18 s | 4 s |
+
+Pass a preset, or override individual knobs, per request:
+
+```bash
+# Use a preset
+curl -X POST http://localhost:3000/api/sessions/<id>/messages \
+  -H 'Content-Type: application/json' \
+  -d '{"to":"628123456789","text":"Hello","pacing":{"preset":"cautious"}}'
+
+# Send immediately — no typing indicator, no delay
+curl -X POST http://localhost:3000/api/sessions/<id>/messages \
+  -H 'Content-Type: application/json' \
+  -d '{"to":"628123456789","text":"Hello","pacing":{"preset":"off"}}'
+
+# Fine-grained control
+curl -X POST http://localhost:3000/api/sessions/<id>/messages \
+  -H 'Content-Type: application/json' \
+  -d '{"to":"628123456789","text":"Hello","pacing":{"preset":"fast","maxDelayMs":1500,"chatCooldownMs":0}}'
+```
+
+Omit `pacing` entirely to accept the `natural` default. The available presets are
+also readable at `GET /api/pacing`, which is what the dashboard's composer uses
+so its controls cannot drift from the server's timing model.
+
+Two implementation notes worth knowing:
+
+- **Pacing runs inside a per-chat queue.** Concurrent requests to the same chat
+  are serialised, so the cooldown is actually enforced rather than measured
+  independently by each request — which would defeat the point.
+- **The typing indicator is best-effort.** If the presence receipt fails, the
+  message is still sent. The indicator is a courtesy; the message is the point.
+
 ### Groups, contacts, chats
 
 ```bash
@@ -285,7 +334,7 @@ alive (whatsmeow auto-reconnects); `destroy()` and `removeStore()` free it.
 
 Verified end to end on Windows 11 (Node 22.22.2):
 
-- `npm test` — 26 unit tests pass
+- `npm test` — 51 unit tests pass
 - `npm run typecheck` — clean across both TS projects
 - `npm run build` — client and server bundles emit
 - Server boots, `/api/sessions/health` returns `ok`
@@ -294,6 +343,11 @@ Verified end to end on Windows 11 (Node 22.22.2):
 - Dashboard driven in a real browser (Edge over CDP): session created through the
   form, QR rendered at 240×240 from the live server, both pairing flows visible,
   console clean, session deleted through the UI
+- Send pacing measured, not just asserted: `off` makes zero presence calls and
+  returns in 0 ms, while `natural` sends `composing → paused` around a ~0.7 s pause
+  for a short message and a ~4.4 s pause for a 120-character one. The dashboard's
+  preset chips were driven in a real browser and the description updates when a
+  preset is selected
 
 ---
 
@@ -305,10 +359,12 @@ Verified end to end on Windows 11 (Node 22.22.2):
   `data/sessions/*.db` can act as the linked account — treat it like a password,
   and pair a spare number rather than a personal one.
 - **Anti-ban guidance.** WhatsApp rate-limits unofficial clients; accounts *can* be
-  banned. Keep roughly 1–3 s between sends, avoid bulk blasts on a freshly paired
-  number, and watch for `stream_error` / `keep_alive_timeout` / `temporary_ban` events.
-  The API surfaces these on the event stream but does not throttle for you — pacing
-  is the caller's responsibility.
+  banned. Every send is paced by default (see
+  [Send pacing](#send-pacing-anti-ban)): a typing indicator, a proportional pause,
+  and a per-chat cooldown. That reduces the risk but does not remove it — avoid bulk
+  blasts on a freshly paired number, and watch for `stream_error` /
+  `keep_alive_timeout` / `temporary_ban` events. The API surfaces these on the event
+  stream but does not stop sending on your behalf.
 - **`logged_out` is terminal.** When a user unlinks the device from their phone, the
   store is invalidated and the session must be re-paired from scratch.
 - **Not affiliated with WhatsApp.** This uses an unofficial client library, which may

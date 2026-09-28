@@ -6,6 +6,7 @@ import ky from "ky";
  */
 export const api = {
   health: "sessions/health",
+  pacing: "pacing",
   sessions: {
     getAll: "sessions",
     getOne: (id: string) => `sessions/${id}`,

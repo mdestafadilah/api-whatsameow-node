@@ -9,6 +9,11 @@ class MiscController {
     return responseOK(c, "Service is healthy", health);
   };
 
+  /** Available send-pacing presets plus how many chats are currently throttled. */
+  getPacingOptions = async (c: Context) => {
+    return responseOK(c, "Pacing options retrieved successfully", miscService.getPacingOptions());
+  };
+
   callMethod = async (c: Context) => {
     const body = (await c.req.json().catch(() => ({}))) as {
       method?: string;

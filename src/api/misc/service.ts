@@ -5,6 +5,7 @@ import { sessionRepository } from "@/database/repositories/sessionRepository";
 import { bus, type GatewayEvent } from "@/lib/whatsapp/eventBus";
 import { badRequest, notFound } from "@/types/errors";
 import { guessMimetype } from "@/lib/whatsapp/messages";
+import { DEFAULT_PACING_PRESET, PRESETS, sendScheduler } from "@/lib/whatsapp/pacing";
 
 class MiscService {
   private async runtime(sessionId: string) {
@@ -80,6 +81,21 @@ class MiscService {
         live: clients.list().length,
         connected: clients.list().filter((runtime) => runtime.status === "connected").length,
       },
+    };
+  }
+
+  /**
+   * The pacing presets, so the dashboard can offer them without hardcoding a
+   * copy that would drift from the server's timing model.
+   */
+  getPacingOptions() {
+    return {
+      defaultPreset: DEFAULT_PACING_PRESET,
+      activeChats: sendScheduler.size(),
+      presets: Object.entries(PRESETS).map(([name, config]) => ({
+        name,
+        ...config,
+      })),
     };
   }
 

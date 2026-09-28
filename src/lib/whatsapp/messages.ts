@@ -3,6 +3,7 @@ import path from "node:path";
 import type { WhatsmeowClient } from "@whatsmeow-node/whatsmeow-node";
 import { badRequest } from "@/types/errors";
 import type { MessageType } from "@/types/apiResponse";
+import type { PacingOverrides } from "./pacing";
 
 /**
  * Anything not a phone number (groups end in `@g.us`, communities in
@@ -51,6 +52,11 @@ export type SendBody = {
   pollSelectableCount?: number;
   /** `raw` — a whatsmeow proto-shaped message. */
   raw?: Record<string, unknown>;
+  /**
+   * Anti-ban pacing. Omit for the `natural` default; pass `preset: "off"` for
+   * an immediate send.
+   */
+  pacing?: PacingOverrides;
 };
 
 export type PreparedMessage = {

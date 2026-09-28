@@ -9,18 +9,75 @@ import {
   PowerOff,
   QrCode,
   Send,
+  Timer,
   Trash2,
   AlertTriangle,
   Loader2,
 } from "lucide-react";
-import { messageService, sessionService } from "@/services/apiService";
+import { messageService, pacingService, sessionService } from "@/services/apiService";
 import { StatusBadge } from "@/components/StatusBadge";
 import { CopyButton, QrCanvas } from "@/components/QrCanvas";
-import type { Message } from "@/types/api";
+import type { Message, PacingPreset, PacingPresetName } from "@/types/api";
 
 export const Route = createFileRoute("/sessions/$sessionId")({
   component: SessionDetailPage,
 });
+
+/** A single pacing chip. */
+function PacingButton({
+  label,
+  active,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`rounded-md border px-2.5 py-1 text-[11px] font-medium capitalize transition-colors ${
+        active
+          ? "border-brand-500 bg-brand-50 text-brand-700"
+          : "border-slate-300 bg-white text-slate-600 hover:bg-slate-100"
+      }`}
+    >
+      {label}
+    </button>
+  );
+}
+
+/**
+ * Describes what a preset will do for this specific message.
+ *
+ * The estimate mirrors `computeTypingDelay` but deliberately skips the jitter —
+ * showing a range that jumps around on every keystroke would be noise, not
+ * information. It is labelled as approximate for that reason.
+ */
+function pacingDescription(
+  presetName: PacingPresetName,
+  presets: PacingPreset[],
+  charCount: number,
+): string {
+  const preset = presets.find((candidate) => candidate.name === presetName);
+  if (!preset) return "";
+
+  if (!preset.typing) {
+    return "Sends immediately, with no typing indicator. Use only for trusted, high-volume automations.";
+  }
+
+  const raw = preset.minDelayMs + charCount * preset.msPerChar;
+  const seconds = Math.round(Math.min(raw, preset.maxDelayMs) / 100) / 10;
+
+  const typingPart = `Shows "typing…" for roughly ${seconds}s`;
+  const cooldownPart =
+    preset.chatCooldownMs > 0
+      ? `, and keeps at least ${preset.chatCooldownMs} ms between messages to the same chat.`
+      : ".";
+
+  return `${typingPart}${cooldownPart}`;
+}
 
 function SessionDetailPage() {
   const { sessionId } = Route.useParams();
@@ -30,11 +87,19 @@ function SessionDetailPage() {
   const [to, setTo] = useState("");
   const [text, setText] = useState("");
   const [confirmLogout, setConfirmLogout] = useState(false);
+  // `null` means "let the server pick", so the UI does not fight the default.
+  const [pacingPreset, setPacingPreset] = useState<PacingPresetName | null>(null);
 
   const { data: session, isLoading } = useQuery({
     queryKey: ["session", sessionId],
     queryFn: () => sessionService.getStatus(sessionId),
     refetchInterval: 4_000,
+  });
+
+  const { data: pacingOptions } = useQuery({
+    queryKey: ["pacing"],
+    queryFn: () => pacingService.getOptions(),
+    refetchInterval: 15_000,
   });
 
   const { data: messages = [] } = useQuery({
@@ -76,10 +141,18 @@ function SessionDetailPage() {
 
   // ── Messaging ────────────────────────────────────
   const sendMutation = useMutation({
-    mutationFn: () => messageService.send(sessionId, { to: to.trim(), text: text.trim() }),
+    mutationFn: () =>
+      messageService.send(sessionId, {
+        to: to.trim(),
+        text: text.trim(),
+        // Omit the field entirely unless the user picked something, so the
+        // server default stays authoritative.
+        ...(pacingPreset ? { pacing: { preset: pacingPreset } } : {}),
+      }),
     onSuccess: () => {
       setText("");
       queryClient.invalidateQueries({ queryKey: ["messages", sessionId] });
+      queryClient.invalidateQueries({ queryKey: ["pacing"] });
     },
   });
 
@@ -314,6 +387,48 @@ function SessionDetailPage() {
                 onChange={(event) => setText(event.target.value)}
                 className="w-full resize-none rounded-lg border border-slate-300 px-3.5 py-2.5 text-sm outline-none transition-colors focus:border-brand-500 focus:ring-2 focus:ring-brand-500/15"
               />
+
+              {pacingOptions && (
+                <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3">
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                      <Timer className="h-3.5 w-3.5" />
+                      Send pacing
+                    </span>
+                    {pacingOptions.activeChats > 0 && (
+                      <span className="rounded bg-slate-200/70 px-1.5 py-0.5 text-[10px] font-medium text-slate-600">
+                        {pacingOptions.activeChats} chat
+                        {pacingOptions.activeChats === 1 ? "" : "s"} throttled
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="flex flex-wrap gap-1.5">
+                    <PacingButton
+                      label="Server default"
+                      active={pacingPreset === null}
+                      onClick={() => setPacingPreset(null)}
+                    />
+                    {pacingOptions.presets.map((preset) => (
+                      <PacingButton
+                        key={preset.name}
+                        label={preset.name}
+                        active={pacingPreset === preset.name}
+                        onClick={() => setPacingPreset(preset.name)}
+                      />
+                    ))}
+                  </div>
+
+                  <p className="mt-2 text-[11px] leading-relaxed text-slate-500">
+                    {pacingDescription(
+                      pacingPreset ?? pacingOptions.defaultPreset,
+                      pacingOptions.presets,
+                      text.trim().length,
+                    )}
+                  </p>
+                </div>
+              )}
+
               <button
                 onClick={() => sendMutation.mutate()}
                 disabled={!to.trim() || !text.trim() || sendMutation.isPending}

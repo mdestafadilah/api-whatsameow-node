@@ -4,6 +4,8 @@ import type {
   ChatSummary,
   Health,
   Message,
+  PacingOptions,
+  PacingPresetName,
   Paginated,
   Session,
   SessionStatusDetail,
@@ -89,6 +91,21 @@ export type SendPayload = {
   fileName?: string;
   latitude?: number;
   longitude?: number;
+  /**
+   * Anti-ban pacing. Omit to accept the server default (`natural`); pass
+   * `{ preset: "off" }` for an immediate send.
+   */
+  pacing?: PacingPayload;
+};
+
+export type PacingPayload = {
+  preset?: PacingPresetName;
+  typing?: boolean;
+  minDelayMs?: number;
+  maxDelayMs?: number;
+  msPerChar?: number;
+  jitterRatio?: number;
+  chatCooldownMs?: number;
 };
 
 export const messageService = {
@@ -111,6 +128,15 @@ export const messageService = {
       .get(api.messages.chats(id))
       .json<ApiResponse<ChatSummary[]>>();
     return response.data ?? [];
+  },
+};
+
+export const pacingService = {
+  /** Presets the server will honour, so the UI never hardcodes timing values. */
+  async getOptions(): Promise<PacingOptions> {
+    const response = await http.get(api.pacing).json<ApiResponse<PacingOptions>>();
+    if (!response.data) throw new Error("Pacing options unavailable");
+    return response.data;
   },
 };
 

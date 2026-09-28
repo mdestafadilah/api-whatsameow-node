@@ -79,3 +79,22 @@ export type Health = {
   platform: string;
   sessions: { total: number; live: number; connected: number };
 };
+
+export type PacingPresetName = "off" | "fast" | "natural" | "cautious";
+
+export type PacingPreset = {
+  name: PacingPresetName;
+  typing: boolean;
+  minDelayMs: number;
+  maxDelayMs: number;
+  msPerChar: number;
+  jitterRatio: number;
+  chatCooldownMs: number;
+};
+
+export type PacingOptions = {
+  defaultPreset: PacingPresetName;
+  /** Chats currently holding scheduler state, i.e. inside a cooldown window. */
+  activeChats: number;
+  presets: PacingPreset[];
+};

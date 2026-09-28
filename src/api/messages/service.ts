@@ -1,10 +1,25 @@
 import { eq } from "drizzle-orm";
+import type { WhatsmeowClient } from "@whatsmeow-node/whatsmeow-node";
 import { db } from "@/database/db";
 import { messagesTable } from "@/database/schema";
 import { messageRepository, type MessageQuery } from "@/database/repositories/messageRepository";
 import { sessionRepository } from "@/database/repositories/sessionRepository";
 import { clients } from "@/lib/whatsapp/clientManager";
-import { extractText, detectType, prepareMessage, type SendBody } from "@/lib/whatsapp/messages";
+import {
+  extractText,
+  detectType,
+  prepareMessage,
+  toJid,
+  type PreparedMessage,
+  type SendBody,
+} from "@/lib/whatsapp/messages";
+import {
+  computeTypingDelay,
+  resolvePacing,
+  sendScheduler,
+  sleep,
+  type PacingConfig,
+} from "@/lib/whatsapp/pacing";
 import { badRequest, notFound, upstreamError } from "@/types/errors";
 import type { MessageType } from "@/types/apiResponse";
 
@@ -14,6 +29,10 @@ class MessageService {
    *
    * The row is written even when the send fails, so the dashboard can show what
    * was attempted instead of silently losing it.
+   *
+   * Pacing happens *inside* the per-chat scheduler, so the typing indicator and
+   * the message arrive together and two concurrent calls to the same chat cannot
+   * interleave their delays.
    */
   async send(sessionId: string, body: SendBody) {
     const session = await sessionRepository.findById(sessionId);
@@ -27,14 +46,22 @@ class MessageService {
       );
     }
 
+    const pacing = resolvePacing(body.pacing);
     const recordId = crypto.randomUUID();
+
+    // Resolve the JID up front so the scheduler can key on the chat even when
+    // the send itself fails.
+    const chatJid = toJid(body.to);
+    const chatKey = `${sessionId}:${chatJid}`;
 
     try {
       const prepared = await prepareMessage(runtime.client, body);
 
-      // Polls use a dedicated whatsmeow builder rather than a proto payload.
-      const result =
-        prepared.type === "poll"
+      const result = await sendScheduler.schedule(chatKey, pacing.chatCooldownMs, async () => {
+        await this.applyPacing(runtime.client, prepared.jid, prepared, pacing);
+
+        // Polls use a dedicated whatsmeow builder rather than a proto payload.
+        return prepared.type === "poll"
           ? await runtime.client.sendPollCreation(
               prepared.jid,
               body.text!,
@@ -42,6 +69,7 @@ class MessageService {
               body.pollSelectableCount ?? 1,
             )
           : await runtime.client.sendRawMessage(prepared.jid, prepared.message);
+      });
 
       await messageRepository.add({
         id: recordId,
@@ -68,7 +96,7 @@ class MessageService {
       await messageRepository.add({
         id: recordId,
         sessionId,
-        chatJid: body.to,
+        chatJid,
         waMessageId: null,
         direction: "outgoing",
         type: (body.type ?? "text") as MessageType,
@@ -79,6 +107,43 @@ class MessageService {
       });
 
       throw upstreamError(`Failed to send message: ${message}`);
+    }
+  }
+
+  /**
+   * Simulate a human: mark the chat as typing, wait a plausible amount of time,
+   * then stop typing so the message lands.
+   *
+   * Both presence calls are best-effort. A chat that silently drops the typing
+   * receipt, or a client that is briefly mid-reconnect, must not fail the send —
+   * the indicator is a courtesy, the message is the point.
+   */
+  private async applyPacing(
+    client: WhatsmeowClient,
+    jid: string,
+    prepared: PreparedMessage,
+    pacing: PacingConfig,
+  ): Promise<void> {
+    if (!pacing.typing) return;
+
+    // Media arrives with no typed text, so `preview` (a caption, filename, or
+    // the text itself) is what the pause should be proportionate to.
+    const delay = computeTypingDelay(prepared.preview ?? "", pacing);
+
+    try {
+      await client.sendChatPresence(jid, "composing");
+    } catch {
+      // Typing indicator is optional; continue to the send regardless.
+    }
+
+    try {
+      if (delay > 0) await sleep(delay);
+    } finally {
+      try {
+        await client.sendChatPresence(jid, "paused");
+      } catch {
+        // As above — a swallowed `paused` must not block the message.
+      }
     }
   }
 

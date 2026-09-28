@@ -57,6 +57,12 @@ app.get("/sessions/health", (c) => {
 
 app.route("/sessions", sessionRoute);
 
+// Send-pacing presets are a property of the server, not of any session, so they
+// are mounted at the root rather than under `/sessions/:id`.
+app.get("/pacing", (c) => {
+  return miscController.getPacingOptions(c);
+});
+
 // Message and chat routes are per-session, matching the REST shape the
 // dashboard uses (`/api/sessions/:id/messages`).
 app.route("/sessions/:id/messages", messageRoute);
