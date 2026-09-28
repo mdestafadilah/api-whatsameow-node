@@ -5,6 +5,9 @@ import { bus } from "@/lib/whatsapp/eventBus";
 import { badRequest, conflict, notFound } from "@/types/errors";
 import type { SessionStatus, SessionView } from "@/types/apiResponse";
 import type { Session } from "@/database/schema";
+import { sendScheduler } from "@/lib/whatsapp/pacing";
+import * as queue from "@/lib/redis/messageQueue";
+import * as cache from "@/lib/redis/cache";
 
 class SessionService {
   /** Merge the persisted row with the live runtime, live state winning. */
@@ -201,6 +204,12 @@ class SessionService {
     await clients.destroy(id);
     clients.removeStore(id);
     await sessionRepository.remove(id);
+
+    // Queued sends and cached views belong to a session that no longer exists.
+    // Left behind, they would keep a Redis list alive forever and the sweep
+    // would keep trying to drain a session that can never connect.
+    sendScheduler.forgetPrefix(`${id}:`);
+    await Promise.all([queue.purge(id), cache.invalidateSession(id)]);
 
     return { id, removed: true };
   }

@@ -22,6 +22,10 @@ import {
 } from "@/lib/whatsapp/pacing";
 import { badRequest, notFound, upstreamError } from "@/types/errors";
 import type { MessageType } from "@/types/apiResponse";
+import * as queue from "@/lib/redis/messageQueue";
+import * as queueWorker from "@/lib/redis/queueWorker";
+import * as cache from "@/lib/redis/cache";
+import { CACHE } from "@/lib/redis/cache";
 
 class MessageService {
   /**
@@ -57,6 +61,76 @@ class MessageService {
     try {
       const prepared = await prepareMessage(runtime.client, body);
 
+      /**
+       * Queue the send when Redis is available, so a burst cannot outrun
+       * whatsmeow's single IPC pipe and a restart cannot lose accepted work.
+       *
+       * The payload is prepared *before* enqueueing: media is already uploaded
+       * and the proto message is final, so the worker holds a finished message
+       * rather than a file path that may be gone by the time it runs.
+       *
+       * Enqueue failure is not an error — it falls through to a direct send,
+       * because Redis being down must not stop messages from going out.
+       */
+      if (!body.immediate) {
+        const queued = await queue.enqueue({
+          id: recordId,
+          sessionId,
+          jid: prepared.jid,
+          chatKey,
+          message: prepared.message,
+          poll:
+            prepared.type === "poll"
+              ? {
+                  question: body.text!,
+                  options: body.pollOptions!,
+                  selectableCount: body.pollSelectableCount ?? 1,
+                }
+              : undefined,
+          type: prepared.type,
+          preview: prepared.preview ?? "",
+          pacing,
+          enqueuedAt: new Date().toISOString(),
+          attempts: 0,
+          status: "queued",
+        });
+
+        if (queued) {
+          await messageRepository.add({
+            id: recordId,
+            sessionId,
+            chatJid: prepared.jid,
+            waMessageId: null,
+            direction: "outgoing",
+            type: prepared.type,
+            body: prepared.preview,
+            status: "queued",
+            createdAt: new Date(),
+          });
+
+          // Kick the worker without waiting for it. The response reports the
+          // queue position; the send itself happens in the background.
+          void queueWorker.drain(sessionId).catch(() => undefined);
+
+          const position = await queue.depth(sessionId);
+
+          // The chat list gains this chat (or bumps it), so the cached view is
+          // now stale. Done here rather than only on success, because the queue
+          // view itself also changed.
+          void cache.invalidateMessageViews(sessionId);
+
+          return {
+            id: recordId,
+            waMessageId: null,
+            to: prepared.jid,
+            type: prepared.type,
+            timestamp: null,
+            queued: true,
+            queuePosition: position,
+          };
+        }
+      }
+
       const result = await sendScheduler.schedule(chatKey, pacing.chatCooldownMs, async () => {
         await this.applyPacing(runtime.client, prepared.jid, prepared, pacing);
 
@@ -83,12 +157,15 @@ class MessageService {
         createdAt: new Date(),
       });
 
+      void cache.invalidateMessageViews(sessionId);
+
       return {
         id: recordId,
         waMessageId: result?.id ?? null,
         to: prepared.jid,
         type: prepared.type,
         timestamp: result?.timestamp ?? null,
+        queued: false,
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -151,16 +228,26 @@ class MessageService {
     return messageRepository.list(query);
   }
 
+  /**
+   * Distinct chats for a session, cached briefly.
+   *
+   * The dashboard polls this every few seconds, and it is an unindexed
+   * `GROUP BY` over the whole message table, so it is the most expensive read in
+   * the app for the least volatile data. Invalidation happens explicitly on send
+   * (`invalidateMessageViews`); the TTL is only a backstop.
+   */
   async listChats(sessionId: string, limit: number) {
     const session = await sessionRepository.findById(sessionId);
     if (!session) throw notFound(`Session "${sessionId}" was not found.`);
 
-    const rows = await messageRepository.listChats(sessionId, limit);
-    return rows.map((row) => ({
-      chatJid: row.chatJid,
-      lastMessageAt: new Date(Number(row.lastMessageAt)).toISOString(),
-      messageCount: Number(row.messageCount),
-    }));
+    return cache.wrap(CACHE.chats, `${sessionId}:${limit}`, async () => {
+      const rows = await messageRepository.listChats(sessionId, limit);
+      return rows.map((row) => ({
+        chatJid: row.chatJid,
+        lastMessageAt: new Date(Number(row.lastMessageAt)).toISOString(),
+        messageCount: Number(row.messageCount),
+      }));
+    });
   }
 
   /**

@@ -4,7 +4,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
   KeyRound,
+  ListOrdered,
   LogOut,
+  Play,
   Power,
   PowerOff,
   QrCode,
@@ -14,7 +16,7 @@ import {
   AlertTriangle,
   Loader2,
 } from "lucide-react";
-import { messageService, pacingService, sessionService } from "@/services/apiService";
+import { messageService, pacingService, queueService, sessionService } from "@/services/apiService";
 import { StatusBadge } from "@/components/StatusBadge";
 import { CopyButton, QrCanvas } from "@/components/QrCanvas";
 import type { Message, PacingPreset, PacingPresetName } from "@/types/api";
@@ -102,6 +104,12 @@ function SessionDetailPage() {
     refetchInterval: 15_000,
   });
 
+  const { data: sessionQueue } = useQuery({
+    queryKey: ["queue", sessionId],
+    queryFn: () => queueService.getSession(sessionId),
+    refetchInterval: 4_000,
+  });
+
   const { data: messages = [] } = useQuery({
     queryKey: ["messages", sessionId],
     queryFn: () => messageService.getMessages(sessionId),
@@ -153,6 +161,17 @@ function SessionDetailPage() {
       setText("");
       queryClient.invalidateQueries({ queryKey: ["messages", sessionId] });
       queryClient.invalidateQueries({ queryKey: ["pacing"] });
+      // A send either enqueues or invalidates the chat cache, so both views move.
+      queryClient.invalidateQueries({ queryKey: ["queue", sessionId] });
+      queryClient.invalidateQueries({ queryKey: ["chats", sessionId] });
+    },
+  });
+
+  const drainMutation = useMutation({
+    mutationFn: () => queueService.drain(sessionId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["queue", sessionId] });
+      queryClient.invalidateQueries({ queryKey: ["messages", sessionId] });
     },
   });
 
@@ -449,9 +468,77 @@ function SessionDetailPage() {
               )}
               {sendMutation.isSuccess && (
                 <p className="rounded-lg bg-brand-50 px-3 py-2 text-xs text-brand-700">
-                  Sent — id {sendMutation.data?.waMessageId ?? "unknown"}
+                  {sendMutation.data?.queued
+                    ? `Queued — position ${sendMutation.data.queuePosition ?? "?"}`
+                    : `Sent — id ${sendMutation.data?.waMessageId ?? "unknown"}`}
                 </p>
               )}
+            </div>
+          )}
+        </section>
+
+        {/* ── Outbound queue ───────────────────────── */}
+        <section className="card p-5">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <ListOrdered className="h-4 w-4 text-brand-600" />
+              <h2 className="text-sm font-semibold text-slate-900">Outbound queue</h2>
+              {(sessionQueue?.depth ?? 0) > 0 && (
+                <span className="rounded bg-brand-100 px-1.5 py-0.5 text-[10px] font-semibold text-brand-700">
+                  {sessionQueue?.depth} pending
+                </span>
+              )}
+            </div>
+
+            <button
+              onClick={() => drainMutation.mutate()}
+              disabled={drainMutation.isPending || (sessionQueue?.depth ?? 0) === 0}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-[11px] font-semibold text-slate-700 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {drainMutation.isPending ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <Play className="h-3 w-3" />
+              )}
+              Drain now
+            </button>
+          </div>
+
+          {drainMutation.isSuccess && (
+            <p className="mb-3 rounded-lg bg-slate-50 px-3 py-2 text-[11px] text-slate-600">
+              Drained — {drainMutation.data.sent} sent, {drainMutation.data.failed} failed,{" "}
+              {drainMutation.data.retried} retried
+            </p>
+          )}
+
+          {!sessionQueue || sessionQueue.entries.length === 0 ? (
+            <p className="rounded-lg border border-dashed border-slate-200 px-3.5 py-6 text-center text-xs text-slate-400">
+              Queue is empty — messages send as soon as they are accepted.
+            </p>
+          ) : (
+            <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
+              {sessionQueue.entries.map((entry, index) => (
+                <div
+                  key={`${entry.id}-${index}`}
+                  className="rounded-lg border border-slate-100 bg-slate-50/60 px-3 py-2"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="truncate font-mono text-[11px] text-slate-500">
+                      {entry.jid}
+                    </span>
+                    <span className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">
+                      {entry.status}
+                    </span>
+                  </div>
+                  <p className="mt-1 break-words text-xs leading-relaxed text-slate-700">
+                    {entry.preview || <span className="italic text-slate-400">[{entry.type}]</span>}
+                  </p>
+                  <p className="mt-0.5 text-[10px] text-slate-400">
+                    queued {new Date(entry.enqueuedAt).toLocaleTimeString()}
+                    {entry.attempts > 0 && ` · ${entry.attempts} attempt(s)`}
+                  </p>
+                </div>
+              ))}
             </div>
           )}
         </section>

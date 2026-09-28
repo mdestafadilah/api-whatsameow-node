@@ -7,7 +7,9 @@ import type {
   PacingOptions,
   PacingPresetName,
   Paginated,
+  QueueStats,
   Session,
+  SessionQueue,
   SessionStatusDetail,
 } from "@/types/api";
 
@@ -96,6 +98,11 @@ export type SendPayload = {
    * `{ preset: "off" }` for an immediate send.
    */
   pacing?: PacingPayload;
+  /**
+   * Bypass the Redis queue and wait for the real send. Use when the WhatsApp
+   * message id is needed in the response.
+   */
+  immediate?: boolean;
 };
 
 export type PacingPayload = {
@@ -108,6 +115,14 @@ export type PacingPayload = {
   chatCooldownMs?: number;
 };
 
+export type SendResult = {
+  waMessageId: string | null;
+  /** True when the message was accepted into the Redis queue, not sent yet. */
+  queued?: boolean;
+  /** Position in the session queue at the moment it was accepted. */
+  queuePosition?: number;
+};
+
 export const messageService = {
   async getMessages(id: string, limit = 50): Promise<Message[]> {
     const response = await http
@@ -116,10 +131,10 @@ export const messageService = {
     return response.data?.items ?? [];
   },
 
-  async send(id: string, payload: SendPayload): Promise<{ waMessageId: string | null }> {
+  async send(id: string, payload: SendPayload): Promise<SendResult> {
     const response = await http
       .post(api.messages.send(id), { json: payload, timeout: 120_000 })
-      .json<ApiResponse<{ waMessageId: string | null }>>();
+      .json<ApiResponse<SendResult>>();
     return response.data ?? { waMessageId: null };
   },
 
@@ -137,6 +152,30 @@ export const pacingService = {
     const response = await http.get(api.pacing).json<ApiResponse<PacingOptions>>();
     if (!response.data) throw new Error("Pacing options unavailable");
     return response.data;
+  },
+};
+
+export const queueService = {
+  /** Server-wide queue depth. Answers even when Redis is unreachable. */
+  async getStats(): Promise<QueueStats> {
+    const response = await http.get(api.queue).json<ApiResponse<QueueStats>>();
+    if (!response.data) throw new Error("Queue stats unavailable");
+    return response.data;
+  },
+
+  async getSession(id: string): Promise<SessionQueue> {
+    const response = await http
+      .get(api.misc.queue(id))
+      .json<ApiResponse<SessionQueue>>();
+    if (!response.data) throw new Error("Session queue unavailable");
+    return response.data;
+  },
+
+  async drain(id: string): Promise<{ sent: number; failed: number; retried: number }> {
+    const response = await http
+      .post(api.misc.drainQueue(id))
+      .json<ApiResponse<{ sent: number; failed: number; retried: number }>>();
+    return response.data ?? { sent: 0, failed: 0, retried: 0 };
   },
 };
 

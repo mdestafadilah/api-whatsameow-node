@@ -45,6 +45,29 @@ class MessageRepository {
     return rows[0];
   }
 
+  /**
+   * Update the status of an already-logged message.
+   *
+   * Used by the Redis queue worker: a send is logged as `queued` the moment it
+   * is accepted, then flipped to `sent`/`failed` once the worker has actually
+   * talked to WhatsApp. Without this, a queued message would look sent before it
+   * left the building.
+   */
+  async updateStatus(
+    id: string,
+    status: string,
+    extra: { waMessageId?: string | null; error?: string | null } = {},
+  ): Promise<void> {
+    await db
+      .update(messagesTable)
+      .set({
+        status,
+        waMessageId: extra.waMessageId ?? null,
+        error: extra.error ?? null,
+      })
+      .where(eq(messagesTable.id, id));
+  }
+
   /** Distinct chats seen for a session, newest activity first. */
   async listChats(sessionId: string, limit: number) {
     return db

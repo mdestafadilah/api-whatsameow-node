@@ -28,3 +28,9 @@ npm-debug.log*
 # Generated route tree is committed intentionally for type-safety in CI
 !src/routeTree.gen.ts
 .workbuddy-ai/*
+# TanStack Router build cache
+.tanstack/
+
+# esbuild scratch bundle emitted by the verification scripts
+outputs/_*.mjs
+outputs/_*.png

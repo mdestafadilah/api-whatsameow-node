@@ -63,6 +63,11 @@ app.get("/pacing", (c) => {
   return miscController.getPacingOptions(c);
 });
 
+// Queue depth spans every session, so it is a server-level view too.
+app.get("/queue", (c) => {
+  return miscController.getQueueStats(c);
+});
+
 // Message and chat routes are per-session, matching the REST shape the
 // dashboard uses (`/api/sessions/:id/messages`).
 app.route("/sessions/:id/messages", messageRoute);

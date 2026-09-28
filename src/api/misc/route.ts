@@ -14,4 +14,8 @@ miscRoute.post("/message-id", miscController.generateMessageId);
 miscRoute.post("/media/upload", miscController.uploadMedia);
 miscRoute.post("/media/download", miscController.downloadMedia);
 
+// Outbound queue, scoped to this session.
+miscRoute.get("/queue", miscController.getSessionQueue);
+miscRoute.post("/queue/drain", miscController.drainQueue);
+
 export default miscRoute;

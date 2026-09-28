@@ -14,6 +14,27 @@ class MiscController {
     return responseOK(c, "Pacing options retrieved successfully", miscService.getPacingOptions());
   };
 
+  /** Queue depth and counters. Stays answerable when Redis is down. */
+  getQueueStats = async (c: Context) => {
+    return responseOK(c, "Queue stats retrieved successfully", await miscService.getQueueStats());
+  };
+
+  /** Queued messages for one session, oldest first. */
+  getSessionQueue = async (c: Context) => {
+    const limit = clampNumber(c.req.query("limit"), 50, 1, 200);
+    return responseOK(
+      c,
+      "Session queue retrieved successfully",
+      await miscService.getSessionQueue(sessionId(c), limit),
+    );
+  };
+
+  /** Drain one session's queue on demand. */
+  drainQueue = async (c: Context) => {
+    const result = await miscService.drainQueue(sessionId(c));
+    return responseOK(c, "Queue drained", result);
+  };
+
   callMethod = async (c: Context) => {
     const body = (await c.req.json().catch(() => ({}))) as {
       method?: string;
@@ -72,6 +93,13 @@ class MiscController {
       },
     );
   };
+}
+
+/** Parse a query parameter into a bounded integer, falling back when invalid. */
+function clampNumber(raw: string | undefined, fallback: number, min: number, max: number): number {
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(Math.max(Math.trunc(parsed), min), max);
 }
 
 export const miscController = new MiscController();

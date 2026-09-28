@@ -6,6 +6,9 @@ import { bus, type GatewayEvent } from "@/lib/whatsapp/eventBus";
 import { badRequest, notFound } from "@/types/errors";
 import { guessMimetype } from "@/lib/whatsapp/messages";
 import { DEFAULT_PACING_PRESET, PRESETS, sendScheduler } from "@/lib/whatsapp/pacing";
+import * as queue from "@/lib/redis/messageQueue";
+import * as queueWorker from "@/lib/redis/queueWorker";
+import { isEnabled as isRedisEnabled, isReady as isRedisReady } from "@/lib/redis/client";
 
 class MiscService {
   private async runtime(sessionId: string) {
@@ -76,12 +79,51 @@ class MiscService {
       uptimeSeconds: Math.round(process.uptime()),
       nodeVersion: process.version,
       platform: `${process.platform}-${process.arch}`,
+      redis: {
+        enabled: isRedisEnabled(),
+        available: isRedisReady(),
+      },
       sessions: {
         total: sessions.length,
         live: clients.list().length,
         connected: clients.list().filter((runtime) => runtime.status === "connected").length,
       },
     };
+  }
+
+  /**
+   * Queue depth, counters and in-flight state.
+   *
+   * Reports `available: false` rather than failing when Redis is unreachable —
+   * the endpoint is how the dashboard discovers that Redis is down, so it must
+   * stay answerable while Redis is not.
+   */
+  async getQueueStats() {
+    const snapshot = await queue.stats();
+    return { ...snapshot, draining: queueWorker.drainingSessions() };
+  }
+
+  /** Queued message ids for one session, oldest first. */
+  async getSessionQueue(sessionId: string, limit: number) {
+    const session = await sessionRepository.findById(sessionId);
+    if (!session) throw notFound(`Session "${sessionId}" was not found.`);
+
+    const ids = await queue.listIds(sessionId, limit);
+    const entries = await Promise.all(ids.map((id) => queue.peek(id)));
+
+    return {
+      sessionId,
+      depth: await queue.depth(sessionId),
+      entries: entries.filter((entry) => entry !== null),
+    };
+  }
+
+  /** Drain one session now, instead of waiting for the next trigger. */
+  async drainQueue(sessionId: string) {
+    const session = await sessionRepository.findById(sessionId);
+    if (!session) throw notFound(`Session "${sessionId}" was not found.`);
+
+    return queueWorker.drain(sessionId);
   }
 
   /**

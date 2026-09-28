@@ -98,3 +98,35 @@ export type PacingOptions = {
   activeChats: number;
   presets: PacingPreset[];
 };
+
+export type QueueStats = {
+  /** Redis was configured. */
+  enabled: boolean;
+  /** Redis is configured *and* reachable — false means degraded, not broken. */
+  available: boolean;
+  sessions: { sessionId: string; pending: number; processing: number; total: number }[];
+  pending: number;
+  processing: number;
+  counters: { enqueued: number; sent: number; failed: number; retried: number };
+  lastEnqueuedAt: string | null;
+  /** Sessions whose queue is being worked right now. */
+  draining: string[];
+};
+
+export type QueuedMessageView = {
+  id: string;
+  sessionId: string;
+  jid: string;
+  type: string;
+  preview: string;
+  status: string;
+  attempts: number;
+  enqueuedAt: string;
+  lastError?: string;
+};
+
+export type SessionQueue = {
+  sessionId: string;
+  depth: number;
+  entries: QueuedMessageView[];
+};

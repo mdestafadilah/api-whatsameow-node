@@ -35,6 +35,19 @@ export const env = {
 
   whatsmeowCommandTimeout: num(process.env.WHATSMEOW_COMMAND_TIMEOUT, 30_000),
   pairCodeTtl: num(process.env.PAIR_CODE_TTL, 60),
+
+  /**
+   * Redis is optional. Empty disables every Redis-backed feature, and the API
+   * degrades to sending straight through — a cache outage must never take the
+   * API down with it.
+   */
+  redisUrl: process.env.REDIS_URL?.trim() || null,
+  /** Key prefix so one Redis can host several environments. */
+  redisPrefix: process.env.REDIS_PREFIX?.trim() || "whatsmeow",
+  /** TTL for cached reads such as chat lists and health snapshots (seconds). */
+  redisCacheTtl: num(process.env.REDIS_CACHE_TTL, 30),
+  /** How many messages a single drain pass may send before yielding. */
+  redisQueueBatch: num(process.env.REDIS_QUEUE_BATCH, 20),
 } as const;
 
 if (env.isProduction && !env.apiKey) {

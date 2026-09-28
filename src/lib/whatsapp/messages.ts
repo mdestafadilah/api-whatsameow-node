@@ -57,6 +57,14 @@ export type SendBody = {
    * an immediate send.
    */
   pacing?: PacingOverrides;
+  /**
+   * Bypass the Redis queue and send inline, waiting for the result.
+   *
+   * Set this when the caller needs the WhatsApp message id in the response, or
+   * when a single send must not be delayed behind unrelated queued traffic.
+   * Without it, a queued send returns `queued: true` and no id.
+   */
+  immediate?: boolean;
 };
 
 export type PreparedMessage = {

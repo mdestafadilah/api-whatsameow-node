@@ -6,7 +6,39 @@ The architecture follows the [BHVR template](https://github.com/ZulfiFazhar/BHVR
 (Bun · Hono · Vite · React) — N-layered backend with routes → controllers → services →
 repositories, and a typed React client.
 
-![stack](https://img.shields.io/badge/Hono-4.x-black) ![stack](https://img.shields.io/badge/React-19-blue) ![stack](https://img.shields.io/badge/whatsmeow--node-0.7.x-green)
+![stack](https://img.shields.io/badge/Hono-4.x-black) ![stack](https://img.shields.io/badge/React-19-blue) ![stack](https://img.shields.io/badge/whatsmeow--node-0.7.x-green) ![stack](https://img.shields.io/badge/Redis-optional-red)
+
+---
+
+## Screenshots
+
+**Sessions dashboard** — each session is an independent WhatsApp account.
+
+![Sessions dashboard](docs/images/01-dashboard.png)
+
+**Pairing** — both flows side by side: scan the QR, or read a pairing code out to
+the phone.
+
+![Pairing](docs/images/02-pairing.png)
+
+**A connected session** — composer with the send-pacing controls, and the outbound
+queue beside it.
+
+![Connected session](docs/images/03-session-paired.png)
+
+**Send pacing** — presets come from the server, so the controls cannot drift from
+the timing model.
+
+![Send pacing](docs/images/04-pacing.png)
+
+**Outbound queue** — durable sends with depth, per-entry status, and a manual drain.
+
+![Outbound queue](docs/images/05-queue.png)
+
+**Drain refuses to lose work** — draining an unpaired session sends nothing and
+leaves every entry queued.
+
+![Queue drained](docs/images/06-queue-drained.png)
 
 ---
 
@@ -30,10 +62,12 @@ over stdin/stdout IPC. It spawns one native Go binary per client, which means:
 | **Connection** | connect, disconnect, logout/unlink |
 | **Messages** | text, media (image/video/audio/document), location, contact, poll, raw, reply, react, edit, revoke, mark read |
 | **Send pacing** | human-like typing indicator + delay, four presets, per-chat cooldown |
+| **Outbound queue** | durable Redis-backed send queue, FIFO, retries, manual drain |
+| **Caching** | read-through Redis cache for chat lists and health |
 | **Chats** | typing indicator, presence, privacy settings, blocklist, disappearing messages, status message, contact QR |
 | **Contacts** | `isOnWhatsApp` check, profile picture, user info, devices, business profile |
 | **Groups** | list, create, info, invite links, join/leave, settings, add/remove/promote/demote, join requests |
-| **Misc** | health, pacing presets, generic IPC escape hatch, message ids, media upload/download |
+| **Misc** | health, pacing presets, queue depth, generic IPC escape hatch, message ids, media upload/download |
 | **Events** | live Server-Sent Events stream of every gateway event |
 
 ---
@@ -104,9 +138,66 @@ All settings live in `.env` (see `.env.example`):
 | `SESSION_DIR` | `./data/sessions` | One whatsmeow store per session |
 | `WHATSMEOW_COMMAND_TIMEOUT` | `30000` | IPC timeout (ms) against the Go binary |
 | `PAIR_CODE_TTL` | `60` | Pairing code validity window (seconds) |
+| `REDIS_URL` | _(empty)_ | Redis connection string. **Empty disables the queue and cache** |
+| `REDIS_PREFIX` | `whatsmeow` | Key prefix, so one Redis can host several environments |
+| `REDIS_CACHE_TTL` | `30` | TTL for cached reads (seconds) |
+| `REDIS_QUEUE_BATCH` | `20` | Messages a single drain pass may send before yielding |
 
 The server **refuses to boot in production without `API_KEY`** — an unauthenticated
 WhatsApp account control panel is not something to expose by accident.
+
+### Redis (optional)
+
+Redis powers two things, and **neither is required**:
+
+- **A durable outbound queue.** A send is accepted into the queue and delivered by
+  a worker, so a burst survives an API restart and a disconnected session catches
+  up on reconnect.
+- **A read-through cache** for chat lists and health, keeping dashboard polling off
+  SQLite.
+
+```bash
+# No Redis? Leave REDIS_URL empty. Sends go straight through; caching is skipped.
+REDIS_URL=
+```
+
+The API is **fail-open** by design: if Redis is configured but unreachable, the
+affected features degrade rather than fail. `/health` reports the distinction —
+`enabled: true, available: false` means "running without the queue right now", not
+"broken". Same for `GET /queue`.
+
+#### Queue semantics
+
+| Property | Behaviour |
+|---|---|
+| Ordering | FIFO per session |
+| Durability | Survives a restart; in-flight entries recovered on boot |
+| Retries | Up to 3 attempts on transient errors, then marked failed |
+| Backoff | A retried message goes to the **back** of the line, not the front |
+| Refusal | An unpaired session is left untouched, not consumed |
+| Delivery | Automatic on `session:connected`, plus a 5-second sweep |
+
+Because a queued send returns `{ "queued": true, "queuePosition": 3 }` rather than a
+message id, that response means **accepted, not delivered**. Pass
+`"immediate": true` on the send to bypass the queue and wait for the real send when
+you need the WhatsApp message id.
+
+#### Redis 3.2 compatibility
+
+The client pins **RESP 2**. Redis 6+ defaults to RESP 3, whose handshake opens with
+`HELLO` — a command Redis 3.2 does not implement. Without the pin the connection
+never opens and the fail-open path silently disables Redis. If you run against an
+older Redis (Laragon ships 3.2 on Windows), this is why it matters.
+
+#### Managing the queue
+
+```bash
+curl http://localhost:3000/api/queue                      # depth + counters, all sessions
+curl http://localhost:3000/api/sessions/<id>/misc/queue    # one session, oldest first
+curl -X POST http://localhost:3000/api/sessions/<id>/misc/queue/drain
+```
+
+Full details in [docs/API.md](docs/API.md#outbound-queue-redis).
 
 ### Client-side API key
 
@@ -119,6 +210,9 @@ VITE_API_KEY=your-key-here
 ---
 
 ## API reference
+
+> **Full reference → [docs/API.md](docs/API.md)** — every endpoint, field, and
+> error code. The section below covers the common flows.
 
 Every response uses the same envelope:
 
@@ -284,7 +378,13 @@ src/
 │   ├── clientManager.ts    # one Go subprocess per session
 │   ├── eventBus.ts         # in-process event fan-out
 │   ├── messages.ts         # proto payload building
+│   ├── pacing.ts           # typing indicator + delay scheduler
 │   └── messageLogger.ts    # inbound persistence
+├── lib/redis/              # optional durability + caching (fail-open)
+│   ├── client.ts           # lazy RESP-2 connection
+│   ├── messageQueue.ts     # list-based queue primitives
+│   ├── queueWorker.ts      # drain loop, retries, recovery
+│   └── cache.ts            # read-through cache
 ├── database/               # Drizzle + SQLite
 │   ├── db.ts
 │   ├── schema.ts
@@ -294,6 +394,10 @@ src/
 ├── components/
 ├── types/
 └── server.ts               # bootstrap
+
+docs/
+├── API.md                  # full endpoint reference
+└── images/                 # screenshots used above
 ```
 
 **Request flow:** route → controller (parse/shape) → service (business logic) →
@@ -334,20 +438,42 @@ alive (whatsmeow auto-reconnects); `destroy()` and `removeStore()` free it.
 
 Verified end to end on Windows 11 (Node 22.22.2):
 
-- `npm test` — 51 unit tests pass
+- `npm test` — 73 unit tests pass
 - `npm run typecheck` — clean across both TS projects
 - `npm run build` — client and server bundles emit
 - Server boots, `/api/sessions/health` returns `ok`
-- Creating a session spawns the Go binary; `/qr` returns a real 277-character
+- Creating a session spawns the Go binary; `/qr` returns a real
   `wa.me/settings/linked_devices#…` pairing string
 - Dashboard driven in a real browser (Edge over CDP): session created through the
   form, QR rendered at 240×240 from the live server, both pairing flows visible,
-  console clean, session deleted through the UI
+  console clean, session deleted through the UI. **The screenshots above are those
+  captures** — see `outputs/docs-screenshots.mjs` (20/20 checks)
 - Send pacing measured, not just asserted: `off` makes zero presence calls and
   returns in 0 ms, while `natural` sends `composing → paused` around a ~0.7 s pause
-  for a short message and a ~4.4 s pause for a 120-character one. The dashboard's
-  preset chips were driven in a real browser and the description updates when a
-  preset is selected
+  for a short message and a ~4.4 s pause for a 120-character one
+
+### Redis, proven against a live server
+
+The queue and cache are verified against a **real Redis 3.2.100**, not a mock
+(`outputs/_queue-integration.mjs`, 21/21 checks):
+
+- **FIFO order, claim/settle, requeue-to-back, crash recovery** preserving order
+- **The cache is live, not decorative.** Poisoning `whatsmeow:cache:chats:<sid>:50`
+  with a sentinel and re-calling the API returns **the sentinel** — proving the
+  read-through path is on the hot path. A 30 s TTL was then observed counting down.
+- **Fail-open proven.** With Redis shut down, `/chats` still returned 200 with real
+  SQLite data, `/health` reported `enabled: true, available: false`, and `/queue`
+  answered instead of erroring.
+- **Automatic recovery proven.** After restarting Redis — with no app restart —
+  `available` flipped back to `true` and the cache repopulated.
+- **Queue durability proven.** Draining an unpaired session left the message
+  `queued` at `depth: 1` rather than consuming it.
+- **Purge proven.** Deleting a session removed its queue list, payload, session
+  registration and cache keys, leaving only the global counters.
+
+Two real bugs were found this way and fixed: RESP 3 negotiation failing against
+Redis 3.2, and the queue being read in the wrong direction (Redis stores it
+newest-first, so the drain order cannot be expressed as a range slice).
 
 ---
 

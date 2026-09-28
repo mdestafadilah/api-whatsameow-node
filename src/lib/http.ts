@@ -7,6 +7,7 @@ import ky from "ky";
 export const api = {
   health: "sessions/health",
   pacing: "pacing",
+  queue: "queue",
   sessions: {
     getAll: "sessions",
     getOne: (id: string) => `sessions/${id}`,
@@ -41,6 +42,8 @@ export const api = {
   },
   misc: {
     health: (id: string) => `sessions/${id}/misc/health`,
+    queue: (id: string) => `sessions/${id}/misc/queue`,
+    drainQueue: (id: string) => `sessions/${id}/misc/queue/drain`,
   },
   events: (id?: string) => (id ? `events?sessionId=${id}` : "events"),
 };
