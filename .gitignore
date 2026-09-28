@@ -1,0 +1,30 @@
+node_modules
+dist
+dist-ssr
+.data
+*.local
+
+# Local secrets
+.env
+.env.*
+!.env.example
+
+# WhatsApp session stores — contain account credentials, never commit
+data/
+*.db
+*.db-shm
+*.db-wal
+
+logs
+*.log
+npm-debug.log*
+
+.DS_Store
+.idea
+.vscode/*
+!.vscode/extensions.json
+*.tsbuildinfo
+
+# Generated route tree is committed intentionally for type-safety in CI
+!src/routeTree.gen.ts
+.workbuddy-ai/*
