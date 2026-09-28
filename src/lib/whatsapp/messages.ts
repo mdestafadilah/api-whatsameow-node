@@ -97,101 +97,127 @@ export async function prepareMessage(
   const jid = toJid(body.to);
   const type: MessageType = body.type ?? "text";
 
-  if (type === "text") {
-    if (!body.text?.trim()) throw badRequest("`text` is required for text messages.");
+  switch (type) {
+    case "text":
+      return buildTextMessage(body, jid);
+    case "raw":
+      return buildRawMessage(body, jid);
+    case "location":
+      return buildLocationMessage(body, jid);
+    case "contact":
+      return buildContactMessage(body, jid);
+    case "poll":
+      return buildPollMessage(body, jid);
+    default:
+      return buildMediaMessage(client, body, type, jid);
+  }
+}
 
-    if (body.replyTo) {
-      return {
-        jid,
-        type,
-        preview: body.text,
-        message: {
-          extendedTextMessage: {
-            text: body.text,
-            contextInfo: {
-              stanzaId: body.replyTo,
-              participant: body.replyToParticipant ?? "",
-              quotedMessage: body.replyToText
-                ? { conversation: body.replyToText }
-                : undefined,
-            },
+// ── Message builders ────────────────────────────────────────────────────────
+
+function buildTextMessage(body: SendBody, jid: string): PreparedMessage {
+  if (!body.text?.trim()) throw badRequest("`text` is required for text messages.");
+
+  if (body.replyTo) {
+    return {
+      jid,
+      type: "text",
+      preview: body.text,
+      message: {
+        extendedTextMessage: {
+          text: body.text,
+          contextInfo: {
+            stanzaId: body.replyTo,
+            participant: body.replyToParticipant ?? "",
+            quotedMessage: body.replyToText
+              ? { conversation: body.replyToText }
+              : undefined,
           },
         },
-      };
-    }
-
-    return { jid, type, preview: body.text, message: { conversation: body.text } };
-  }
-
-  if (type === "raw") {
-    if (!body.raw || typeof body.raw !== "object" || Object.keys(body.raw).length === 0) {
-      throw badRequest("`raw` must be a non-empty object for type=raw.");
-    }
-    return { jid, type, preview: "[raw message]", message: body.raw };
-  }
-
-  if (type === "location") {
-    if (typeof body.latitude !== "number" || typeof body.longitude !== "number") {
-      throw badRequest("`latitude` and `longitude` are required for location messages.");
-    }
-    return {
-      jid,
-      type,
-      preview: body.locationName ?? `${body.latitude},${body.longitude}`,
-      message: {
-        locationMessage: {
-          degreesLatitude: body.latitude,
-          degreesLongitude: body.longitude,
-          name: body.locationName ?? "",
-        },
       },
     };
   }
 
-  if (type === "contact") {
-    if (!body.contactPhone) throw badRequest("`contactPhone` is required for contact messages.");
-    const name = body.contactName?.trim() || body.contactPhone;
-    return {
-      jid,
-      type,
-      preview: name,
-      message: {
-        contactMessage: {
-          displayName: name,
-          vcard: [
-            "BEGIN:VCARD",
-            "VERSION:3.0",
-            `FN:${name}`,
-            `TEL;type=CELL;waid=${body.contactPhone.replace(/[^\d]/g, "")}:${body.contactPhone}`,
-            "END:VCARD",
-          ].join("\n"),
-        },
+  return { jid, type: "text", preview: body.text, message: { conversation: body.text } };
+}
+
+function buildRawMessage(body: SendBody, jid: string): PreparedMessage {
+  if (!body.raw || typeof body.raw !== "object" || Object.keys(body.raw).length === 0) {
+    throw badRequest("`raw` must be a non-empty object for type=raw.");
+  }
+  return { jid, type: "raw", preview: "[raw message]", message: body.raw };
+}
+
+function buildLocationMessage(body: SendBody, jid: string): PreparedMessage {
+  if (typeof body.latitude !== "number" || typeof body.longitude !== "number") {
+    throw badRequest("`latitude` and `longitude` are required for location messages.");
+  }
+  return {
+    jid,
+    type: "location",
+    preview: body.locationName ?? `${body.latitude},${body.longitude}`,
+    message: {
+      locationMessage: {
+        degreesLatitude: body.latitude,
+        degreesLongitude: body.longitude,
+        name: body.locationName ?? "",
       },
-    };
-  }
+    },
+  };
+}
 
-  if (type === "poll") {
-    if (!body.text?.trim()) throw badRequest("`text` is the poll question and is required.");
-    if (!body.pollOptions || body.pollOptions.length < 2) {
-      throw badRequest("`pollOptions` must contain at least two options.");
-    }
-    // Polls are not part of the generic proto map — whatsmeow has a dedicated
-    // builder, so route through sendPollCreation instead of a message payload.
-    return {
-      jid,
-      type,
-      preview: body.text,
-      message: {},
-    };
-  }
+function buildContactMessage(body: SendBody, jid: string): PreparedMessage {
+  if (!body.contactPhone) throw badRequest("`contactPhone` is required for contact messages.");
+  const name = body.contactName?.trim() || body.contactPhone;
+  return {
+    jid,
+    type: "contact",
+    preview: name,
+    message: {
+      contactMessage: {
+        displayName: name,
+        vcard: [
+          "BEGIN:VCARD",
+          "VERSION:3.0",
+          `FN:${name}`,
+          `TEL;type=CELL;waid=${body.contactPhone.replace(/[^\d]/g, "")}:${body.contactPhone}`,
+          "END:VCARD",
+        ].join("\n"),
+      },
+    },
+  };
+}
 
-  // ── Media ────────────────────────────────────────
+function buildPollMessage(body: SendBody, jid: string): PreparedMessage {
+  if (!body.text?.trim()) throw badRequest("`text` is the poll question and is required.");
+  if (!body.pollOptions || body.pollOptions.length < 2) {
+    throw badRequest("`pollOptions` must contain at least two options.");
+  }
+  // Polls are not part of the generic proto map — whatsmeow has a dedicated
+  // builder, so route through sendPollCreation instead of a message payload.
+  return {
+    jid,
+    type: "poll",
+    preview: body.text,
+    message: {},
+  };
+}
+
+async function buildMediaMessage(
+  client: WhatsmeowClient,
+  body: SendBody,
+  type: MessageType,
+  jid: string,
+): Promise<PreparedMessage> {
   const field = MEDIA_FIELD[type];
   if (!field) throw badRequest(`Unsupported message type "${type}".`);
   if (!body.mediaUrl) throw badRequest(`\`mediaUrl\` is required for ${type} messages.`);
 
   const localPath = await resolveMedia(body.mediaUrl);
-  const upload = await client.uploadMedia(localPath, type === "document" ? "document" : (type as "image" | "video" | "audio"));
+  const upload = await client.uploadMedia(
+    localPath,
+    type === "document" ? "document" : (type as "image" | "video" | "audio"),
+  );
 
   const payload: Record<string, unknown> = {
     URL: upload.URL,
@@ -233,6 +259,8 @@ export async function prepareMessage(
     message: { [field]: { ...payload, ...replyContext } },
   };
 }
+
+// ── Media helpers ───────────────────────────────────────────────────────────
 
 /**
  * Accepts either a path on this machine or an http(s) URL.
@@ -287,6 +315,8 @@ const MIME_BY_EXT: Record<string, string> = {
 function guessMimetype(filePath: string): string {
   return MIME_BY_EXT[path.extname(filePath).toLowerCase()] ?? "application/octet-stream";
 }
+
+// ── Incoming message helpers ────────────────────────────────────────────────
 
 /**
  * Extract readable text from an incoming proto message.

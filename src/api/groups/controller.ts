@@ -2,6 +2,7 @@ import type { Context } from "hono";
 import { groupService } from "./service";
 import { responseCreated, responseOK, responseBadRequest } from "../utils/response";
 import { sessionId } from "../utils/context";
+import { safeJson } from "../utils/body";
 
 class GroupController {
   getGroups = async (c: Context) => {
@@ -18,22 +19,16 @@ class GroupController {
   };
 
   createGroup = async (c: Context) => {
-    const body = (await c.req.json().catch(() => ({}))) as {
-      name?: string;
-      participants?: string[];
-    };
+    const body = await safeJson(c);
+    const name = (body.name as string | undefined)?.trim();
+    const participants = body.participants as string[] | undefined;
 
-    if (!body.name?.trim()) return responseBadRequest(c, "`name` is required.");
-    if (!body.participants?.length) {
+    if (!name) return responseBadRequest(c, "`name` is required.");
+    if (!participants?.length) {
       return responseBadRequest(c, "`participants` must contain at least one number.");
     }
 
-    const group = await groupService.createGroup(
-      sessionId(c),
-      body.name.trim(),
-      body.participants,
-    );
-
+    const group = await groupService.createGroup(sessionId(c), name, participants);
     return responseCreated(c, "Group created successfully", group);
   };
 
@@ -56,64 +51,60 @@ class GroupController {
   };
 
   joinGroup = async (c: Context) => {
-    const body = (await c.req.json().catch(() => ({}))) as { code?: string };
-    if (!body.code) return responseBadRequest(c, "`code` is required.");
+    const body = await safeJson(c);
+    const code = body.code as string | undefined;
+    if (!code) return responseBadRequest(c, "`code` is required.");
 
-    const result = await groupService.joinWithLink(sessionId(c), body.code);
+    const result = await groupService.joinWithLink(sessionId(c), code);
     return responseOK(c, "Joined group successfully", result);
   };
 
   leaveGroup = async (c: Context) => {
-    const body = (await c.req.json().catch(() => ({}))) as { jid?: string };
-    if (!body.jid) return responseBadRequest(c, "`jid` is required.");
+    const body = await safeJson(c);
+    const jid = body.jid as string | undefined;
+    if (!jid) return responseBadRequest(c, "`jid` is required.");
 
-    const result = await groupService.leaveGroup(sessionId(c), body.jid);
+    const result = await groupService.leaveGroup(sessionId(c), jid);
     return responseOK(c, "Left group successfully", result);
   };
 
   updateGroup = async (c: Context) => {
-    const body = (await c.req.json().catch(() => ({}))) as {
-      jid?: string;
-      name?: string;
-      topic?: string;
-      announce?: boolean;
-      locked?: boolean;
-    };
+    const body = await safeJson(c);
+    const jid = body.jid as string | undefined;
 
-    if (!body.jid) return responseBadRequest(c, "`jid` is required.");
+    if (!jid) return responseBadRequest(c, "`jid` is required.");
 
-    const group = await groupService.updateSettings(sessionId(c), body.jid, {
-      name: body.name,
-      topic: body.topic,
-      announce: body.announce,
-      locked: body.locked,
+    const group = await groupService.updateSettings(sessionId(c), jid, {
+      name: body.name as string | undefined,
+      topic: body.topic as string | undefined,
+      announce: body.announce as boolean | undefined,
+      locked: body.locked as boolean | undefined,
     });
 
     return responseOK(c, "Group updated successfully", group);
   };
 
   updateParticipants = async (c: Context) => {
-    const body = (await c.req.json().catch(() => ({}))) as {
-      jid?: string;
-      participants?: string[];
-      action?: "add" | "remove" | "promote" | "demote";
-    };
+    const body = await safeJson(c);
+    const jid = body.jid as string | undefined;
+    const participants = body.participants as string[] | undefined;
+    const action = body.action as string | undefined;
 
-    if (!body.jid) return responseBadRequest(c, "`jid` is required.");
-    if (!body.participants?.length) {
+    if (!jid) return responseBadRequest(c, "`jid` is required.");
+    if (!participants?.length) {
       return responseBadRequest(c, "`participants` must be a non-empty array.");
     }
 
     const validActions = ["add", "remove", "promote", "demote"];
-    if (!body.action || !validActions.includes(body.action)) {
+    if (!action || !validActions.includes(action)) {
       return responseBadRequest(c, `\`action\` must be one of: ${validActions.join(", ")}.`);
     }
 
     const result = await groupService.updateParticipants(
       sessionId(c),
-      body.jid,
-      body.participants,
-      body.action,
+      jid,
+      participants,
+      action as "add" | "remove" | "promote" | "demote",
     );
 
     return responseOK(c, "Participants updated successfully", result);
@@ -128,25 +119,24 @@ class GroupController {
   };
 
   handleJoinRequests = async (c: Context) => {
-    const body = (await c.req.json().catch(() => ({}))) as {
-      jid?: string;
-      participants?: string[];
-      action?: "approve" | "reject";
-    };
+    const body = await safeJson(c);
+    const jid = body.jid as string | undefined;
+    const participants = body.participants as string[] | undefined;
+    const action = body.action as string | undefined;
 
-    if (!body.jid) return responseBadRequest(c, "`jid` is required.");
-    if (!body.participants?.length) {
+    if (!jid) return responseBadRequest(c, "`jid` is required.");
+    if (!participants?.length) {
       return responseBadRequest(c, "`participants` must be a non-empty array.");
     }
-    if (body.action !== "approve" && body.action !== "reject") {
+    if (action !== "approve" && action !== "reject") {
       return responseBadRequest(c, "`action` must be either `approve` or `reject`.");
     }
 
     const result = await groupService.handleJoinRequests(
       sessionId(c),
-      body.jid,
-      body.participants,
-      body.action,
+      jid,
+      participants,
+      action as "approve" | "reject",
     );
 
     return responseOK(c, "Join requests handled successfully", result);

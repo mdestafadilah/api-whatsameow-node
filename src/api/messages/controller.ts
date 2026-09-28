@@ -2,6 +2,7 @@ import type { Context } from "hono";
 import { messageService } from "./service";
 import { responseCreated, responseNotFound, responseOK, responsePaginated } from "../utils/response";
 import { sessionId } from "../utils/context";
+import { safeJson, clampNumber } from "../utils/body";
 import type { SendBody } from "@/lib/whatsapp/messages";
 
 class MessageController {
@@ -37,90 +38,66 @@ class MessageController {
   };
 
   markRead = async (c: Context) => {
-    const body = (await c.req.json().catch(() => ({}))) as {
-      ids?: string[];
-      chat?: string;
-    };
+    const body = await safeJson(c);
+    const ids = Array.isArray(body.ids) ? (body.ids as string[]) : [];
+    const chat = typeof body.chat === "string" ? body.chat : undefined;
 
-    const result = await messageService.markRead(
-      sessionId(c),
-      Array.isArray(body.ids) ? body.ids : [],
-      body.chat,
-    );
-
+    const result = await messageService.markRead(sessionId(c), ids, chat);
     return responseOK(c, "Messages marked as read", result);
   };
 
   reactToMessage = async (c: Context) => {
-    const body = (await c.req.json()) as {
-      chat?: string;
-      messageId?: string;
-      sender?: string;
-      reaction?: string;
-    };
+    const body = await safeJson(c);
+    const chat = body.chat as string | undefined;
+    const messageId = body.messageId as string | undefined;
 
-    if (!body.chat || !body.messageId) {
+    if (!chat || !messageId) {
       return responseNotFound(c, "`chat` and `messageId` are required.");
     }
 
     const result = await messageService.react(
       sessionId(c),
-      body.chat,
-      body.messageId,
-      body.reaction ?? "",
-      body.sender ?? "",
+      chat,
+      messageId,
+      (body.reaction as string) ?? "",
+      (body.sender as string) ?? "",
     );
 
     return responseCreated(c, "Reaction sent successfully", result);
   };
 
   editMessage = async (c: Context) => {
-    const body = (await c.req.json()) as {
-      chat?: string;
-      messageId?: string;
-      text?: string;
-    };
+    const body = await safeJson(c);
+    const chat = body.chat as string | undefined;
+    const messageId = body.messageId as string | undefined;
+    const text = body.text as string | undefined;
 
-    if (!body.chat || !body.messageId || !body.text) {
+    if (!chat || !messageId || !text) {
       return responseNotFound(c, "`chat`, `messageId` and `text` are required.");
     }
 
-    const result = await messageService.edit(
-      sessionId(c),
-      body.chat,
-      body.messageId,
-      body.text,
-    );
-
+    const result = await messageService.edit(sessionId(c), chat, messageId, text);
     return responseOK(c, "Message edited successfully", result);
   };
 
   revokeMessage = async (c: Context) => {
-    const body = (await c.req.json()) as {
-      chat?: string;
-      messageId?: string;
-      sender?: string;
-    };
+    const body = await safeJson(c);
+    const chat = body.chat as string | undefined;
+    const messageId = body.messageId as string | undefined;
 
-    if (!body.chat || !body.messageId) {
+    if (!chat || !messageId) {
       return responseNotFound(c, "`chat` and `messageId` are required.");
     }
 
     const result = await messageService.revoke(
       sessionId(c),
-      body.chat,
-      body.messageId,
-      body.sender ?? "",
+      chat,
+      messageId,
+      (body.sender as string) ?? "",
     );
 
     return responseOK(c, "Message revoked successfully", result);
   };
-}
-
-function clampNumber(raw: string | undefined, fallback: number, min: number, max: number): number {
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.min(Math.max(Math.trunc(parsed), min), max);
 }
 
 export const messageController = new MessageController();

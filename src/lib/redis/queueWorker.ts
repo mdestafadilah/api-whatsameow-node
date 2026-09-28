@@ -14,7 +14,8 @@
 import type { WhatsmeowClient } from "@whatsmeow-node/whatsmeow-node";
 import { env } from "@/env";
 import { clients } from "@/lib/whatsapp/clientManager";
-import { computeTypingDelay, sendScheduler, sleep, type PacingConfig } from "@/lib/whatsapp/pacing";
+import { sendScheduler, type PacingConfig } from "@/lib/whatsapp/pacing";
+import { applyTypingPacing } from "@/lib/whatsapp/sendHelpers";
 import { messageRepository } from "@/database/repositories/messageRepository";
 import * as cache from "@/lib/redis/cache";
 import * as queue from "./messageQueue";
@@ -115,23 +116,7 @@ async function deliver(
       entry.chatKey,
       pacing.chatCooldownMs,
       async () => {
-        if (pacing.typing) {
-          const delay = computeTypingDelay(entry.preview, pacing);
-          try {
-            await client.sendChatPresence(entry.jid, "composing");
-          } catch {
-            // Presence is a courtesy; the message is the point.
-          }
-          try {
-            if (delay > 0) await sleep(delay);
-          } finally {
-            try {
-              await client.sendChatPresence(entry.jid, "paused");
-            } catch {
-              // As above.
-            }
-          }
-        }
+        await applyTypingPacing(client, entry.jid, entry.preview, pacing);
 
         const sent = entry.poll
           ? await client.sendPollCreation(

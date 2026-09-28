@@ -28,6 +28,13 @@ class SessionService {
     };
   }
 
+  /** Fail fast when a session does not exist. */
+  private async requireSession(id: string): Promise<Session> {
+    const session = await sessionRepository.findById(id);
+    if (!session) throw notFound(`Session "${id}" was not found.`);
+    return session;
+  }
+
   /**
    * Create a session record and boot its WhatsApp client.
    *
@@ -65,8 +72,7 @@ class SessionService {
   }
 
   async getById(id: string) {
-    const session = await sessionRepository.findById(id);
-    if (!session) throw notFound(`Session "${id}" was not found.`);
+    const session = await this.requireSession(id);
     return this.toView(session);
   }
 
@@ -94,8 +100,7 @@ class SessionService {
    * wait briefly on the bus rather than returning null and forcing a poll.
    */
   async getQr(id: string, timeoutMs = 10_000) {
-    const session = await sessionRepository.findById(id);
-    if (!session) throw notFound(`Session "${id}" was not found.`);
+    await this.requireSession(id);
 
     const runtime = await clients.ensure(id);
 
@@ -131,8 +136,7 @@ class SessionService {
 
   /** Request an 8-character pairing code for a phone number. */
   async requestPairCode(id: string, phoneNumber: string) {
-    const session = await sessionRepository.findById(id);
-    if (!session) throw notFound(`Session "${id}" was not found.`);
+    await this.requireSession(id);
 
     const code = await clients.requestPairCode(id, phoneNumber);
 
@@ -146,8 +150,7 @@ class SessionService {
 
   /** Force a reconnect. whatsmeow reconnects on its own; this is the manual nudge. */
   async connect(id: string) {
-    const session = await sessionRepository.findById(id);
-    if (!session) throw notFound(`Session "${id}" was not found.`);
+    await this.requireSession(id);
 
     const runtime = await clients.ensure(id);
     await runtime.client.connect();
@@ -156,8 +159,7 @@ class SessionService {
   }
 
   async disconnect(id: string) {
-    const session = await sessionRepository.findById(id);
-    if (!session) throw notFound(`Session "${id}" was not found.`);
+    await this.requireSession(id);
 
     const runtime = clients.get(id);
     if (!runtime) {
@@ -175,8 +177,7 @@ class SessionService {
    * store — the session must be re-paired afterwards.
    */
   async logout(id: string) {
-    const session = await sessionRepository.findById(id);
-    if (!session) throw notFound(`Session "${id}" was not found.`);
+    await this.requireSession(id);
 
     const runtime = clients.get(id);
     if (runtime) {
@@ -194,12 +195,11 @@ class SessionService {
       connectedAt: null,
     });
 
-    return this.toView(updated ?? session);
+    return this.toView(updated ?? (await this.requireSession(id)));
   }
 
   async remove(id: string) {
-    const session = await sessionRepository.findById(id);
-    if (!session) throw notFound(`Session "${id}" was not found.`);
+    await this.requireSession(id);
 
     await clients.destroy(id);
     clients.removeStore(id);

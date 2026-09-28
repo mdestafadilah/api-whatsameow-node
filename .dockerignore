@@ -17,3 +17,16 @@ outputs
 # The client is served by Vite on the host during development.
 index.html
 public
+
+# IDE
+.vscode
+.idea
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+coverage
+.nyc_output
+tests

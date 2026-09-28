@@ -1,13 +1,8 @@
 import type { Context } from "hono";
 import { sessionService } from "./service";
-import {
-  responseCreated,
-  responseOK,
-  responseBadRequest,
-  responseNotFound,
-} from "../utils/response";
-import { ApiError } from "@/types/errors";
+import { responseCreated, responseOK, responseBadRequest } from "../utils/response";
 import { sessionId } from "../utils/context";
+import { safeJson } from "../utils/body";
 
 /**
  * Controllers stay thin: parse the request, call the service, shape the
@@ -77,15 +72,4 @@ class SessionController {
   };
 }
 
-/** Body is optional on several endpoints, so tolerate an empty payload. */
-async function safeJson(c: Context): Promise<Record<string, unknown>> {
-  try {
-    const body = await c.req.json();
-    return typeof body === "object" && body !== null ? (body as Record<string, unknown>) : {};
-  } catch {
-    return {};
-  }
-}
-
 export const sessionController = new SessionController();
-export { ApiError, responseNotFound };

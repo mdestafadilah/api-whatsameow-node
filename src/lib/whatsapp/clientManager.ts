@@ -115,9 +115,17 @@ class ClientManager {
   }
 
   private attachListeners(runtime: SessionRuntime): void {
+    this.attachPairingListeners(runtime);
+    this.attachConnectionListeners(runtime);
+    this.attachTrafficListeners(runtime);
+    this.attachFailureListeners(runtime);
+  }
+
+  // ── Pairing ───────────────────────────────────────────────────────────────
+
+  private attachPairingListeners(runtime: SessionRuntime): void {
     const { client, id } = runtime;
 
-    // ── Pairing ─────────────────────────────────────
     client.on("qr", ({ code }) => {
       runtime.qr = { code, receivedAt: new Date().toISOString() };
       this.setStatus(runtime, "pairing");
@@ -135,8 +143,13 @@ class ClientManager {
         message: `QR channel error: ${event}`,
       });
     });
+  }
 
-    // ── Connection lifecycle ────────────────────────
+  // ── Connection lifecycle ──────────────────────────────────────────────────
+
+  private attachConnectionListeners(runtime: SessionRuntime): void {
+    const { client, id } = runtime;
+
     client.on("connected", ({ jid }) => {
       runtime.jid = jid;
       runtime.qr = null;
@@ -181,8 +194,13 @@ class ClientManager {
         degraded: true,
       });
     });
+  }
 
-    // ── Traffic ─────────────────────────────────────
+  // ── Traffic ───────────────────────────────────────────────────────────────
+
+  private attachTrafficListeners(runtime: SessionRuntime): void {
+    const { client, id } = runtime;
+
     client.on("message", ({ info, message }) => {
       bus.emitEvent("message", {
         sessionId: id,
@@ -216,8 +234,13 @@ class ClientManager {
     client.on("call:offer", ({ from, callId }) => {
       bus.emitEvent("call", { sessionId: id, type: "offer", from, callId });
     });
+  }
 
-    // ── Failures ────────────────────────────────────
+  // ── Failures ──────────────────────────────────────────────────────────────
+
+  private attachFailureListeners(runtime: SessionRuntime): void {
+    const { client, id } = runtime;
+
     client.on("error", (error) => {
       const message = describeError(error);
       runtime.lastError = message;

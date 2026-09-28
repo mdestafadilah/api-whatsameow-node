@@ -2,6 +2,7 @@ import type { Context } from "hono";
 import { miscService } from "./service";
 import { responseOK, responseBadRequest } from "../utils/response";
 import { sessionId } from "../utils/context";
+import { safeJson, clampNumber } from "../utils/body";
 
 class MiscController {
   getHealth = async (c: Context) => {
@@ -36,20 +37,18 @@ class MiscController {
   };
 
   callMethod = async (c: Context) => {
-    const body = (await c.req.json().catch(() => ({}))) as {
-      method?: string;
-      args?: Record<string, unknown>;
-    };
+    const body = await safeJson(c);
+    const method = body.method as string | undefined;
 
-    if (!body.method) return responseBadRequest(c, "`method` is required.");
+    if (!method) return responseBadRequest(c, "`method` is required.");
 
     const result = await miscService.callMethod(
       sessionId(c),
-      body.method,
-      body.args ?? {},
+      method,
+      (body.args as Record<string, unknown>) ?? {},
     );
 
-    return responseOK(c, `Method "${body.method}" executed successfully`, result);
+    return responseOK(c, `Method "${method}" executed successfully`, result);
   };
 
   generateMessageId = async (c: Context) => {
@@ -58,30 +57,29 @@ class MiscController {
   };
 
   uploadMedia = async (c: Context) => {
-    const body = (await c.req.json().catch(() => ({}))) as {
-      path?: string;
-      mediaType?: string;
-    };
+    const body = await safeJson(c);
+    const path = body.path as string | undefined;
 
-    if (!body.path) return responseBadRequest(c, "`path` is required.");
+    if (!path) return responseBadRequest(c, "`path` is required.");
 
     const result = await miscService.uploadMedia(
       sessionId(c),
-      body.path,
-      body.mediaType ?? "document",
+      path,
+      (body.mediaType as string) ?? "document",
     );
 
     return responseOK(c, "Media uploaded successfully", result);
   };
 
   downloadMedia = async (c: Context) => {
-    const body = (await c.req.json().catch(() => ({}))) as { message?: Record<string, unknown> };
+    const body = await safeJson(c);
+    const message = body.message as Record<string, unknown> | undefined;
 
-    if (!body.message) {
+    if (!message) {
       return responseBadRequest(c, "`message` must be a proto-shaped message object.");
     }
 
-    const result = await miscService.downloadMedia(sessionId(c), body.message);
+    const result = await miscService.downloadMedia(sessionId(c), message);
     return responseOK(c, "Media downloaded successfully", result);
   };
 
@@ -93,13 +91,6 @@ class MiscController {
       },
     );
   };
-}
-
-/** Parse a query parameter into a bounded integer, falling back when invalid. */
-function clampNumber(raw: string | undefined, fallback: number, min: number, max: number): number {
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.min(Math.max(Math.trunc(parsed), min), max);
 }
 
 export const miscController = new MiscController();

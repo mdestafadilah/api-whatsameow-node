@@ -1,5 +1,4 @@
 import { eq } from "drizzle-orm";
-import type { WhatsmeowClient } from "@whatsmeow-node/whatsmeow-node";
 import { db } from "@/database/db";
 import { messagesTable } from "@/database/schema";
 import { messageRepository, type MessageQuery } from "@/database/repositories/messageRepository";
@@ -13,13 +12,8 @@ import {
   type PreparedMessage,
   type SendBody,
 } from "@/lib/whatsapp/messages";
-import {
-  computeTypingDelay,
-  resolvePacing,
-  sendScheduler,
-  sleep,
-  type PacingConfig,
-} from "@/lib/whatsapp/pacing";
+import { resolvePacing, sendScheduler } from "@/lib/whatsapp/pacing";
+import { applyTypingPacing } from "@/lib/whatsapp/sendHelpers";
 import { badRequest, notFound, upstreamError } from "@/types/errors";
 import type { MessageType } from "@/types/apiResponse";
 import * as queue from "@/lib/redis/messageQueue";
@@ -73,77 +67,18 @@ class MessageService {
        * because Redis being down must not stop messages from going out.
        */
       if (!body.immediate) {
-        const queued = await queue.enqueue({
-          id: recordId,
+        const enqueued = await this.tryEnqueueSend({
+          recordId,
           sessionId,
-          jid: prepared.jid,
+          prepared,
           chatKey,
-          message: prepared.message,
-          poll:
-            prepared.type === "poll"
-              ? {
-                  question: body.text!,
-                  options: body.pollOptions!,
-                  selectableCount: body.pollSelectableCount ?? 1,
-                }
-              : undefined,
-          type: prepared.type,
-          preview: prepared.preview ?? "",
+          body,
           pacing,
-          enqueuedAt: new Date().toISOString(),
-          attempts: 0,
-          status: "queued",
         });
-
-        if (queued) {
-          await messageRepository.add({
-            id: recordId,
-            sessionId,
-            chatJid: prepared.jid,
-            waMessageId: null,
-            direction: "outgoing",
-            type: prepared.type,
-            body: prepared.preview,
-            status: "queued",
-            createdAt: new Date(),
-          });
-
-          // Kick the worker without waiting for it. The response reports the
-          // queue position; the send itself happens in the background.
-          void queueWorker.drain(sessionId).catch(() => undefined);
-
-          const position = await queue.depth(sessionId);
-
-          // The chat list gains this chat (or bumps it), so the cached view is
-          // now stale. Done here rather than only on success, because the queue
-          // view itself also changed.
-          void cache.invalidateMessageViews(sessionId);
-
-          return {
-            id: recordId,
-            waMessageId: null,
-            to: prepared.jid,
-            type: prepared.type,
-            timestamp: null,
-            queued: true,
-            queuePosition: position,
-          };
-        }
+        if (enqueued) return enqueued;
       }
 
-      const result = await sendScheduler.schedule(chatKey, pacing.chatCooldownMs, async () => {
-        await this.applyPacing(runtime.client, prepared.jid, prepared, pacing);
-
-        // Polls use a dedicated whatsmeow builder rather than a proto payload.
-        return prepared.type === "poll"
-          ? await runtime.client.sendPollCreation(
-              prepared.jid,
-              body.text!,
-              body.pollOptions!,
-              body.pollSelectableCount ?? 1,
-            )
-          : await runtime.client.sendRawMessage(prepared.jid, prepared.message);
-      });
+      const result = await this.executeDirectSend(runtime.client, prepared, body, chatKey, pacing);
 
       await messageRepository.add({
         id: recordId,
@@ -169,59 +104,123 @@ class MessageService {
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-
-      await messageRepository.add({
-        id: recordId,
-        sessionId,
-        chatJid,
-        waMessageId: null,
-        direction: "outgoing",
-        type: (body.type ?? "text") as MessageType,
-        body: body.text ?? body.caption ?? null,
-        status: "failed",
-        error: message,
-        createdAt: new Date(),
-      });
-
+      await this.recordFailedSend(recordId, sessionId, chatJid, body, message);
       throw upstreamError(`Failed to send message: ${message}`);
     }
   }
 
-  /**
-   * Simulate a human: mark the chat as typing, wait a plausible amount of time,
-   * then stop typing so the message lands.
-   *
-   * Both presence calls are best-effort. A chat that silently drops the typing
-   * receipt, or a client that is briefly mid-reconnect, must not fail the send —
-   * the indicator is a courtesy, the message is the point.
-   */
-  private async applyPacing(
-    client: WhatsmeowClient,
-    jid: string,
+  /** Attempt to queue the message via Redis. Returns null if queuing was skipped or failed. */
+  private async tryEnqueueSend(args: {
+    recordId: string;
+    sessionId: string;
+    prepared: PreparedMessage;
+    chatKey: string;
+    body: SendBody;
+    pacing: import("@/lib/whatsapp/pacing").PacingConfig;
+  }) {
+    const { recordId, sessionId, prepared, chatKey, body, pacing } = args;
+
+    const queued = await queue.enqueue({
+      id: recordId,
+      sessionId,
+      jid: prepared.jid,
+      chatKey,
+      message: prepared.message,
+      poll:
+        prepared.type === "poll"
+          ? {
+              question: body.text!,
+              options: body.pollOptions!,
+              selectableCount: body.pollSelectableCount ?? 1,
+            }
+          : undefined,
+      type: prepared.type,
+      preview: prepared.preview ?? "",
+      pacing,
+      enqueuedAt: new Date().toISOString(),
+      attempts: 0,
+      status: "queued",
+    });
+
+    if (!queued) return null;
+
+    await messageRepository.add({
+      id: recordId,
+      sessionId,
+      chatJid: prepared.jid,
+      waMessageId: null,
+      direction: "outgoing",
+      type: prepared.type,
+      body: prepared.preview,
+      status: "queued",
+      createdAt: new Date(),
+    });
+
+    // Kick the worker without waiting for it. The response reports the
+    // queue position; the send itself happens in the background.
+    void queueWorker.drain(sessionId).catch(() => undefined);
+
+    const position = await queue.depth(sessionId);
+
+    // The chat list gains this chat (or bumps it), so the cached view is
+    // now stale. Done here rather than only on success, because the queue
+    // view itself also changed.
+    void cache.invalidateMessageViews(sessionId);
+
+    return {
+      id: recordId,
+      waMessageId: null,
+      to: prepared.jid,
+      type: prepared.type,
+      timestamp: null,
+      queued: true,
+      queuePosition: position,
+    };
+  }
+
+  /** Perform a synchronous send with pacing and scheduling. */
+  private async executeDirectSend(
+    client: import("@whatsmeow-node/whatsmeow-node").WhatsmeowClient,
     prepared: PreparedMessage,
-    pacing: PacingConfig,
-  ): Promise<void> {
-    if (!pacing.typing) return;
+    body: SendBody,
+    chatKey: string,
+    pacing: import("@/lib/whatsapp/pacing").PacingConfig,
+  ) {
+    return sendScheduler.schedule(chatKey, pacing.chatCooldownMs, async () => {
+      await applyTypingPacing(client, prepared.jid, prepared.preview ?? "", pacing);
 
-    // Media arrives with no typed text, so `preview` (a caption, filename, or
-    // the text itself) is what the pause should be proportionate to.
-    const delay = computeTypingDelay(prepared.preview ?? "", pacing);
+      // Polls use a dedicated whatsmeow builder rather than a proto payload.
+      return prepared.type === "poll"
+        ? await client.sendPollCreation(
+            prepared.jid,
+            body.text!,
+            body.pollOptions!,
+            body.pollSelectableCount ?? 1,
+          )
+        : await client.sendRawMessage(prepared.jid, prepared.message);
+    });
+  }
 
-    try {
-      await client.sendChatPresence(jid, "composing");
-    } catch {
-      // Typing indicator is optional; continue to the send regardless.
-    }
-
-    try {
-      if (delay > 0) await sleep(delay);
-    } finally {
-      try {
-        await client.sendChatPresence(jid, "paused");
-      } catch {
-        // As above — a swallowed `paused` must not block the message.
-      }
-    }
+  /** Record a failed send attempt so the dashboard can show what was tried. */
+  private async recordFailedSend(
+    recordId: string,
+    sessionId: string,
+    chatJid: string,
+    body: SendBody,
+    error: string,
+  ) {
+    await messageRepository.add({
+      id: recordId,
+      sessionId,
+      chatJid,
+      waMessageId: null,
+      direction: "outgoing",
+      type: (body.type ?? "text") as MessageType,
+      body: body.text ?? body.caption ?? null,
+      status: "failed",
+      error,
+      createdAt: new Date(),
+    });
   }
 
   async list(query: MessageQuery) {

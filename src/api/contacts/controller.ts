@@ -2,18 +2,15 @@ import type { Context } from "hono";
 import { contactService } from "./service";
 import { responseOK, responseBadRequest } from "../utils/response";
 import { sessionId } from "../utils/context";
+import { safeJson } from "../utils/body";
 
 class ContactController {
   /**
    * Accepts either `{ phones: [...] }` or `{ phone: "..." }`.
    */
   checkNumbers = async (c: Context) => {
-    const body = (await c.req.json().catch(() => ({}))) as {
-      phone?: string;
-      phones?: string[];
-    };
-
-    const phones = body.phones ?? (body.phone ? [body.phone] : []);
+    const body = await safeJson(c);
+    const phones = (body.phones as string[] | undefined) ?? (body.phone ? [body.phone as string] : []);
     if (phones.length === 0) {
       return responseBadRequest(c, "Provide `phone` or `phones` in the request body.");
     }
@@ -31,18 +28,20 @@ class ContactController {
   };
 
   getInfo = async (c: Context) => {
-    const body = (await c.req.json().catch(() => ({}))) as { jids?: string[] };
-    if (!body.jids?.length) return responseBadRequest(c, "`jids` must be a non-empty array.");
+    const body = await safeJson(c);
+    const jids = body.jids as string[] | undefined;
+    if (!jids?.length) return responseBadRequest(c, "`jids` must be a non-empty array.");
 
-    const result = await contactService.getInfo(sessionId(c), body.jids);
+    const result = await contactService.getInfo(sessionId(c), jids);
     return responseOK(c, "Contact info retrieved successfully", result);
   };
 
   getDevices = async (c: Context) => {
-    const body = (await c.req.json().catch(() => ({}))) as { jids?: string[] };
-    if (!body.jids?.length) return responseBadRequest(c, "`jids` must be a non-empty array.");
+    const body = await safeJson(c);
+    const jids = body.jids as string[] | undefined;
+    if (!jids?.length) return responseBadRequest(c, "`jids` must be a non-empty array.");
 
-    const result = await contactService.getDevices(sessionId(c), body.jids);
+    const result = await contactService.getDevices(sessionId(c), jids);
     return responseOK(c, "User devices retrieved successfully", result);
   };
 
