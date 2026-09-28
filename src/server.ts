@@ -1,6 +1,6 @@
 import { serve } from "@hono/node-server";
 import { env } from "./env";
-import { ensureSchema } from "./database/db";
+import { driverName, ensureSchema } from "./database/db";
 import { clients } from "./lib/whatsapp/clientManager";
 import { registerMessageLogger } from "./lib/whatsapp/messageLogger";
 import { bus } from "./lib/whatsapp/eventBus";
@@ -11,6 +11,52 @@ import app from "./api";
 
 /** How often to sweep the queue for sessions with pending work. */
 const QUEUE_SWEEP_MS = 5_000;
+
+/** `process.versions.bun` is set by Bun and by nothing else we run on. */
+const isBun = typeof (process.versions as Record<string, string | undefined>).bun === "string";
+
+/** The two adapters differ in how they stop, so both are normalised to this. */
+type ServerHandle = {
+  port: number;
+  stop: () => void;
+};
+
+/**
+ * Start the HTTP listener on whichever runtime we are on.
+ *
+ * Bun gets its own `Bun.serve`. Going through `@hono/node-server` there would
+ * mean routing every request through Bun's `node:http` compatibility layer,
+ * which is slower and is not what the streaming endpoints are written against.
+ * Node keeps `@hono/node-server`, as before.
+ */
+function startServer(onListen: (info: { port: number }) => void): ServerHandle {
+  if (isBun) {
+    const bun = (globalThis as { Bun?: { serve: (options: Record<string, unknown>) => {
+      port: number;
+      stop: (closeActiveConnections?: boolean) => void;
+    } } }).Bun;
+
+    if (!bun) {
+      throw new Error("Running under Bun, but the global `Bun` object is unavailable.");
+    }
+
+    const server = bun.serve({
+      fetch: app.fetch,
+      port: env.port,
+      hostname: env.host,
+    });
+
+    onListen({ port: server.port });
+    return { port: server.port, stop: () => server.stop(true) };
+  }
+
+  const server = serve(
+    { fetch: app.fetch, port: env.port, hostname: env.host },
+    (info) => onListen({ port: info.port }),
+  );
+
+  return { port: env.port, stop: () => server.close() };
+}
 
 /**
  * Boot the API.
@@ -23,26 +69,20 @@ async function main() {
   ensureSchema();
   registerMessageLogger();
 
-  const server = serve(
-    {
-      fetch: app.fetch,
-      port: env.port,
-      hostname: env.host,
-    },
-    (info) => {
-      console.log("");
-      console.log("  whatsmeow-api");
-      console.log(`  API      http://${env.host}:${info.port}/api`);
-      console.log(`  Events   http://${env.host}:${info.port}/api/events`);
-      console.log(`  Sessions ${env.sessionDir}`);
-      console.log(`  Database ${env.databasePath}`);
-      console.log(`  Auth     ${env.apiKey ? "API key required" : "disabled (dev only)"}`);
-      console.log(
-        `  Redis    ${env.redisUrl ? (redisReady() ? "connected" : "configured") : "disabled"}`,
-      );
-      console.log("");
-    },
-  );
+  const server = startServer((info) => {
+    console.log("");
+    console.log("  whatsmeow-api");
+    console.log(`  Runtime  ${isBun ? `Bun ${process.versions.bun}` : `Node ${process.version}`}`);
+    console.log(`  API      http://${env.host}:${info.port}/api`);
+    console.log(`  Events   http://${env.host}:${info.port}/api/events`);
+    console.log(`  Sessions ${env.sessionDir}`);
+    console.log(`  Database ${env.databasePath} (${driverName()})`);
+    console.log(`  Auth     ${env.apiKey ? "API key required" : "disabled (dev only)"}`);
+    console.log(
+      `  Redis    ${env.redisUrl ? (redisReady() ? "connected" : "configured") : "disabled"}`,
+    );
+    console.log("");
+  });
 
   // Sessions are not auto-started: nothing should open a WhatsApp socket until
   // someone asks for one. Previously created sessions resume lazily via
@@ -80,7 +120,7 @@ async function main() {
 
     // Closing the socket first stops new work; then the Go subprocesses are
     // reaped so no orphaned binaries survive the parent.
-    server.close();
+    server.stop();
     await clients.destroyAll();
     await closeRedis();
 

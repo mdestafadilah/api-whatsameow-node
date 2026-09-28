@@ -1,0 +1,85 @@
+# whatsmeow-api — API + Redis.
+#
+#   cp .env.example .env     # then set API_KEY
+#   docker compose up -d
+#
+# The dashboard is intentionally not part of this stack: it is a Vite dev
+# server, and the API does not serve static files. Run it on the host with
+# `bun run dev:client` and it will proxy /api to http://localhost:3000.
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: whatsmeow-api:latest
+    container_name: whatsmeow-api
+    restart: unless-stopped
+
+    ports:
+      # The dashboard and the SSE stream both talk to this port.
+      - "3000:3000"
+
+    environment:
+      NODE_ENV: production
+      # Bound inside the container; compose maps it to the host above. Leave
+      # this at 0.0.0.0 — anything else and the published port stays unreachable.
+      HOST: 0.0.0.0
+      PORT: "3000"
+      # Required. The server refuses to boot in production without it, so fail
+      # here with a readable message instead of a crash-loop later.
+      API_KEY: ${API_KEY:?API_KEY is required — set it in .env (see .env.example)}
+      # Both live under the mounted volume, so paired sessions survive a
+      # container rebuild.
+      DATABASE_PATH: /app/data/whatsmeow.db
+      SESSION_DIR: /app/data/sessions
+      # Comment out REDIS_URL to run without Redis: sends go straight through
+      # and caching is skipped. The API degrades rather than failing.
+      REDIS_URL: redis://redis:6379
+      REDIS_PREFIX: whatsmeow
+
+    volumes:
+      - whatsmeow-data:/app/data
+
+    depends_on:
+      redis:
+        condition: service_healthy
+
+    healthcheck:
+      test: ["CMD", "bun", "-e", "fetch('http://127.0.0.1:3000/api/name').then((r) => { if (!r.ok) process.exit(1); }).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 5
+
+    # Shutdown reaps one Go subprocess per connected session; 10s is not always
+    # enough for a busy node.
+    stop_grace_period: 20s
+
+  redis:
+    image: redis:7-alpine
+    container_name: whatsmeow-redis
+    restart: unless-stopped
+
+    # AOF so a queued message survives a Redis restart — the queue is the whole
+    # reason this service exists.
+    command: ["redis-server", "--appendonly", "yes"]
+
+    volumes:
+      - whatsmeow-redis:/data
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+    # Not published to the host. Nothing outside this stack needs it.
+    expose:
+      - "6379"
+
+volumes:
+  # Paired WhatsApp session stores. Treat this like a password — it holds live
+  # account credentials.
+  whatsmeow-data:
+  whatsmeow-redis:

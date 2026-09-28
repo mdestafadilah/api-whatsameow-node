@@ -34,3 +34,5 @@ npm-debug.log*
 # esbuild scratch bundle emitted by the verification scripts
 outputs/_*.mjs
 outputs/_*.png
+outputs/_*.ts
+outputs/_*.db*

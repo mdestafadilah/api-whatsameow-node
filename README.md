@@ -74,40 +74,38 @@ over stdin/stdout IPC. It spawns one native Go binary per client, which means:
 
 ## Requirements
 
-- **Node.js 20+** (the API runs under Node — see the note below)
+- **Bun 1.2+** *(recommended)* or **Node.js 22.5+**
 - A WhatsApp account (a spare number is strongly advised)
 - The `whatsmeow-node` native binary ships automatically via `optionalDependencies` —
   supported on Windows, macOS and Linux (x64 and arm64)
 
-### Why the server runs under Node, not Bun
+### Bun or Node, your choice
 
-The client (`vite build`) and `bun install` work fine with Bun, but **the API server
-must run under Node**. Bun 1.3.6 crashes with an internal N-API assertion failure
-when loading `better-sqlite3`, and the same crash occurs during `bun install` on this
-platform. `npm run dev:server` therefore uses `node scripts/run-server.mjs`, which
-bundles the server with esbuild (resolving the `@/*` path alias and keeping
-`better-sqlite3` external) and runs the output under Node.
+Both run the API; nothing in the codebase is pinned to either.
 
-You can still use Bun for everything that does not touch the native SQLite driver:
+| | Bun | Node |
+|---|---|---|
+| Server | `src/server.ts` executed directly | bundled by esbuild into `dist/server`, then run |
+| HTTP | `Bun.serve` | `@hono/node-server` |
+| SQLite | `bun:sqlite` | `node:sqlite` |
 
-```bash
-bun install          # fine
-bun run dev:client   # fine
-bun run test         # fine
-npm run dev:server   # use this, not `bun run`
-```
+Node cannot execute TypeScript, so `scripts/run-server.mjs` detects which runtime
+started it and only builds when it has to. Under Bun there is no build step at all.
+
+SQLite comes from the runtime's own built-in driver on both sides — see
+[Why better-sqlite3 is gone](#why-better-sqlite3-is-gone).
 
 ## Quick start
 
 ```bash
 # 1. Install
-npm install          # or: bun install
+bun install          # or: npm install
 
 # 2. Configure
 cp .env.example .env
 
 # 3. Run both the API and the dashboard
-npm run dev
+bun run dev
 ```
 
 - Dashboard → http://localhost:5173
@@ -119,9 +117,48 @@ Then click **Create**, open the session, and pair it by scanning the QR code wit
 ### Running the two processes separately
 
 ```bash
-npm run dev:server   # Hono API on :3000 (esbuild watch + Node)
-npm run dev:client   # Vite dev server on :5173, proxies /api → :3000
+bun run dev:server   # Hono API on :3000
+bun run dev:client   # Vite dev server on :5173, proxies /api → :3000
 ```
+
+## Docker
+
+```bash
+cp .env.example .env     # then set API_KEY — the server refuses to boot without it
+docker compose up -d
+```
+
+That starts the API on **:3000** and Redis alongside it, with paired sessions and the
+SQLite database kept in the `whatsmeow-data` volume. To run without Redis, comment
+out `REDIS_URL` in `docker-compose.yml`; the API degrades to sending straight
+through.
+
+```bash
+docker compose logs -f api    # follow the API
+docker compose down           # stop, keeping the volumes
+```
+
+The image is Bun-based and ships `src/` as-is — Bun runs TypeScript directly, so
+there is no build step and no compiler toolchain in the image.
+
+The **dashboard is not part of the stack**: it is a Vite dev server and the API does
+not serve static files. Run it on the host with `bun run dev:client`.
+
+---
+
+### Why better-sqlite3 is gone
+
+The API used to depend on `better-sqlite3`, a native addon. It was the single reason
+this project could not run under Bun — loading it panics the Bun process with an
+N-API assertion failure — and on Windows it did not even install, because node-gyp
+needs a Windows SDK.
+
+Both target runtimes ship SQLite themselves (`bun:sqlite`, `node:sqlite`), so
+`src/database/sqlite.ts` picks whichever one is present and Drizzle is bound to it
+through `drizzle-orm/sqlite-proxy`. No native module, no compiler, `bun install`
+finishes. The only wrinkle: `bunfig.toml` sets `install.peer = false`, because Bun
+auto-installs drizzle-orm's optional peers and would otherwise pull
+`better-sqlite3` back in.
 
 ---
 
@@ -423,25 +460,33 @@ alive (whatsmeow auto-reconnects); `destroy()` and `removeStore()` free it.
 
 | Script | Purpose |
 |---|---|
-| `npm run dev` | API + dashboard together |
-| `npm run dev:server` | Hono API with esbuild watch (Node) |
-| `npm run dev:client` | Vite dev server |
-| `npm run build` | Type-check + build client + bundle server |
-| `npm test` | Vitest unit tests |
-| `npm run typecheck` | `tsc -b` across both projects |
-| `npm run db:push` | Push the Drizzle schema to SQLite |
-| `npm run db:studio` | Drizzle Studio |
+| `bun run dev` | API + dashboard together |
+| `bun run dev:server` | Hono API — Bun runs `src/server.ts` with `--watch`; Node bundles first |
+| `bun run dev:client` | Vite dev server |
+| `bun run build` | Type-check + build client + bundle server |
+| `bun test` | Vitest unit tests |
+| `bun run typecheck` | `tsc -b` across both projects |
+| `bun run db:push` | Push the Drizzle schema to SQLite |
+| `bun run db:studio` | Drizzle Studio |
+
+Every script above also works as `npm run …` — the runner uses whichever runtime
+launched it.
 
 ---
 
 ## Verification
 
-Verified end to end on Windows 11 (Node 22.22.2):
+Verified end to end on Windows 11, under **Bun 1.3.14** and **Node 22.22.2**:
 
-- `npm test` — 73 unit tests pass
-- `npm run typecheck` — clean across both TS projects
+- `bun test` — 73 unit tests pass
+- `bun run typecheck` — clean across both projects
 - `npm run build` — client and server bundles emit
-- Server boots, `/api/sessions/health` returns `ok`
+- Server boots under both runtimes, `/api/sessions/health` returns `ok`
+- Both runtimes read the same SQLite file — a session created under Bun is
+  visible after a restart under Node
+- The repository layer was probed directly against a real database under each
+  runtime: insert-returning, find, update-returning, paged list with count,
+  grouped chat list, status update and delete all return identical rows
 - Creating a session spawns the Go binary; `/qr` returns a real
   `wa.me/settings/linked_devices#…` pairing string
 - Dashboard driven in a real browser (Edge over CDP): session created through the

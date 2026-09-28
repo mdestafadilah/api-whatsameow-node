@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
-import Database from "better-sqlite3";
-import { drizzle } from "drizzle-orm/better-sqlite3";
+import { drizzle } from "drizzle-orm/sqlite-proxy";
 import { env } from "@/env";
+import { driverName, openDatabase, type SqliteDatabase } from "./sqlite";
 import * as schema from "./schema";
 
 /**
@@ -14,13 +14,41 @@ import * as schema from "./schema";
  */
 fs.mkdirSync(path.dirname(env.databasePath), { recursive: true });
 
-const sqlite = new Database(env.databasePath);
+const sqlite: SqliteDatabase = openDatabase(env.databasePath);
 
-sqlite.pragma("journal_mode = WAL");
-sqlite.pragma("foreign_keys = ON");
-sqlite.pragma("busy_timeout = 5000");
+// Spoken as `exec`, not `db.pragma()`, because only better-sqlite3 has a
+// `pragma()` method — the built-in drivers do not.
+sqlite.exec("PRAGMA journal_mode = WAL");
+sqlite.exec("PRAGMA foreign_keys = ON");
+sqlite.exec("PRAGMA busy_timeout = 5000");
 
-export const db = drizzle(sqlite, { schema });
+/**
+ * Drizzle bound through `sqlite-proxy`.
+ *
+ * The built-in drivers have no dedicated Drizzle adapter, so we hand Drizzle a
+ * callback instead of a driver object. Two details matter:
+ *
+ * - **Rows are positional arrays, not objects.** Drizzle maps a returned row by
+ *   column index (`mapResultRow` reads `row[columnIndex]`), so a row shaped
+ *   `{ id, label }` would decode to all-`undefined`. Every row is therefore
+ *   flattened to its values in SQL column order.
+ * - **`get` returns a single row, not a one-element array.** The proxy session
+ *   treats `rows` as *the* row, which is why the two read methods differ below.
+ */
+export const db = drizzle(
+  async (sqlText, params, method) => {
+    const statement = sqlite.prepare(sqlText);
+
+    if (method === "run") {
+      statement.run(...params);
+      return { rows: [] };
+    }
+
+    const rows = statement.all(...params).map((row) => Object.values(row));
+    return { rows: method === "get" ? rows[0] : rows };
+  },
+  { schema },
+);
 
 export type Db = typeof db;
 
@@ -71,4 +99,10 @@ export function ensureSchema(): void {
   `);
 }
 
+/** Close the connection. Used on shutdown and by the verification scripts. */
+export function closeDatabase(): void {
+  sqlite.close();
+}
+
 export { schema };
+export { driverName, sqlite };

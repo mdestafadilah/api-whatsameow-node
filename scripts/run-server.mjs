@@ -1,16 +1,20 @@
 /**
  * Development/production runner for the API server.
  *
- * Why this exists: the server uses the same `@/*` path alias as the client, and
- * it imports TypeScript directly. Plain `node src/server.ts` cannot resolve
- * either, and Bun's N-API layer crashes on `better-sqlite3` on this machine.
- * esbuild bundles once into `dist/server` and Node runs the output — a plain
- * file with no alias resolution left to do at runtime.
+ * Two paths, picked from the runtime that executes this file:
  *
- * Watch mode rebuilds on change and restarts the child process.
+ * - **Bun** — runs `src/server.ts` directly. Bun resolves the `@/*` alias from
+ *   `tsconfig.json` and strips the types itself, so there is nothing to build
+ *   and `--watch` restarts in milliseconds.
+ * - **Node** — cannot execute TypeScript, so esbuild bundles once into
+ *   `dist/server` and Node runs the output. Same watch behaviour, one extra
+ *   build step.
+ *
+ * The reason both exist rather than always bundling: the bundle is only needed
+ * to paper over Node's lack of a TS loader, and paying for it under Bun would
+ * slow the hot path down for no benefit.
  */
 import { spawn } from "node:child_process";
-import { build, context } from "esbuild";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -22,35 +26,20 @@ const outfile = path.resolve(root, "dist/server/server.mjs");
 const watch = process.argv.includes("--watch");
 const buildOnly = process.argv.includes("--build-only");
 
-/** `better-sqlite3` is a native addon — it must stay external. */
-const buildOptions = {
-  entryPoints: [entry],
-  outfile,
-  bundle: true,
-  platform: "node",
-  target: "node20",
-  format: "esm",
-  sourcemap: true,
-  external: ["better-sqlite3", "@whatsmeow-node/*"],
-  alias: {
-    "@": path.resolve(root, "src"),
-  },
-  // `import.meta.dirname` and friends are preserved by Node, not shimmed.
-  banner: {
-    js: [
-      `import { createRequire as __createRequire } from "node:module";`,
-      `const require = __createRequire(import.meta.url);`,
-    ].join("\n"),
-  },
-  logLevel: "info",
-};
+/** `process.versions.bun` is set by Bun and by nothing else we run on. */
+const isBun = typeof process.versions?.bun === "string";
 
 let child = null;
 
 function startServer() {
-  child = spawn(process.execPath, [outfile], {
+  // Under Bun the entry point is TypeScript; under Node it is the bundle.
+  const args = isBun ? [entry] : [outfile];
+  if (watch && isBun) args.unshift("--watch");
+
+  child = spawn(process.execPath, args, {
     stdio: "inherit",
     env: process.env,
+    cwd: root,
   });
 
   child.on("exit", (code, signal) => {
@@ -61,13 +50,41 @@ function startServer() {
   });
 }
 
-async function run() {
-  if (!watch) {
+/**
+ * Node-only build. Kept lazy so running under Bun never loads esbuild.
+ *
+ * `@whatsmeow-node/*` stays external because it resolves a platform-specific
+ * native binary at runtime.
+ */
+async function bundle({ watch: watchMode }) {
+  const { build, context } = await import("esbuild");
+
+  const buildOptions = {
+    entryPoints: [entry],
+    outfile,
+    bundle: true,
+    platform: "node",
+    target: "node20",
+    format: "esm",
+    sourcemap: true,
+    external: ["@whatsmeow-node/*"],
+    alias: {
+      "@": path.resolve(root, "src"),
+    },
+    // Bundled CJS dependencies (dotenv, etc.) call `require()` at runtime,
+    // which does not exist in an ESM output file — unless we put it back.
+    banner: {
+      js: [
+        `import { createRequire as __createRequire } from "node:module";`,
+        `const require = __createRequire(import.meta.url);`,
+      ].join("\n"),
+    },
+    logLevel: "info",
+  };
+
+  if (!watchMode) {
     await build(buildOptions);
-    // `--build-only` lets `npm run build` emit the server bundle without
-    // starting it, so CI can build everything and then deploy separately.
-    if (!buildOnly) startServer();
-    return;
+    return null;
   }
 
   const ctx = await context({
@@ -96,6 +113,23 @@ async function run() {
 
   await ctx.watch();
   console.log("[runner] Watching for changes…");
+  return ctx;
+}
+
+async function run() {
+  // `--build-only` always takes the esbuild path, so `npm run build` emits the
+  // same `dist/server` bundle no matter which runtime ran it.
+  if (isBun && !buildOnly) {
+    // Bun owns the watch loop, so there is nothing for us to rebuild.
+    startServer();
+    return;
+  }
+
+  await bundle({ watch });
+
+  // `--build-only` lets `npm run build` emit the server bundle without
+  // starting it, so CI can build everything and then deploy separately.
+  if (!watch && !buildOnly) startServer();
 }
 
 const shutdown = () => {

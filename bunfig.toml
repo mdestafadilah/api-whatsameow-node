@@ -1,0 +1,16 @@
+# Bun configuration.
+#
+# `peer = false` is load-bearing, not a preference.
+#
+# drizzle-orm declares a long list of optional peer dependencies — better-sqlite3
+# among them. Bun auto-installs peers even when marked optional, and
+# better-sqlite3 has no working build here: node-gyp needs a Windows SDK, and
+# even where it does build, loading it under Bun crashes the process. Nothing in
+# this project imports it any more (SQLite comes from `bun:sqlite` or
+# `node:sqlite`), so skipping peer auto-install is what makes `bun install`
+# finish at all.
+#
+# This does NOT affect `optionalDependencies` — that is the mechanism that
+# delivers the platform-specific whatsmeow Go binary, and it stays enabled.
+[install]
+peer = false

@@ -6,7 +6,8 @@
   "type": "module",
   "main": "src/server.ts",
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.5.0",
+    "bun": ">=1.2.0"
   },
   "scripts": {
     "dev": "concurrently -n server,client -c cyan,magenta \"npm:dev:server\" \"npm:dev:client\"",
@@ -24,13 +25,11 @@
   },
   "dependencies": {
     "@hono/node-server": "^2.1.1",
-    "@hono/node-ws": "^1.3.1",
     "@rollup/rollup-win32-x64-msvc": "^4.63.5",
     "@tailwindcss/vite": "^4.2.1",
     "@tanstack/react-query": "^5.90.21",
     "@tanstack/react-router": "^1.167.3",
     "@whatsmeow-node/whatsmeow-node": "^0.7.2",
-    "better-sqlite3": "^13.0.3",
     "dotenv": "^17.3.1",
     "drizzle-orm": "^0.45.3",
     "hono": "^4.13.9",
@@ -46,7 +45,6 @@
     "@tanstack/react-query-devtools": "^5.91.3",
     "@tanstack/react-router-devtools": "^1.166.9",
     "@tanstack/router-plugin": "^1.166.12",
-    "@types/better-sqlite3": "^7.6.13",
     "@types/bun": "^1.3.10",
     "@types/node": "^25.5.0",
     "@types/qrcode": "^1.5.5",
@@ -55,6 +53,7 @@
     "@vitejs/plugin-react": "5.1.1",
     "concurrently": "^9.2.1",
     "drizzle-kit": "^0.31.9",
+    "esbuild": "^0.25.0",
     "typescript": "^5.9.3",
     "vite": "^6.4.1",
     "vitest": "^3.2.4"

@@ -1,0 +1,19 @@
+node_modules
+dist
+data
+.git
+.github
+docs
+outputs
+.tanstack
+*.log
+*.tsbuildinfo
+
+# Never bake secrets or live session credentials into an image.
+.env
+.env.*
+!.env.example
+
+# The client is served by Vite on the host during development.
+index.html
+public
