@@ -162,6 +162,39 @@ auto-installs drizzle-orm's optional peers and would otherwise pull
 
 ---
 
+### Why no platform-specific package is pinned in `package.json`
+
+`npm install` used to fail on Linux with
+
+```
+npm error code EBADPLATFORM
+npm error notsup Unsupported platform for @rollup/rollup-win32-x64-msvc@4.63.5:
+npm error notsup wanted {"os":"win32","cpu":"x64"} (current: {"os":"linux","cpu":"x64"})
+```
+
+`@rollup/rollup-win32-x64-msvc` is one of Rollup's prebuilt binaries, published as an
+`optionalDependency` of `rollup`. Optional dependencies are the mechanism that lets a
+single lockfile serve every platform: npm *skips* the entries whose `os`/`cpu` do not
+match, instead of failing. That skip only happens for nodes marked `optional`
+(`arborist/reify.js`: `if (node.optional) { ... checkPlatform(node.package, false, …) }`,
+where a throw is caught and the node rolled back).
+
+The trap: once that package is listed as a **root** dependency it stops being optional,
+and npm validate its platform unconditionally in `build-ideal-tree.js`
+(`checkPlatform(node.package, this.options.force)` — not guarded by `node.optional`).
+On Windows the check passes and nothing looks wrong. On the Linux server the same
+lockfile is fatal, and `npm ci` cannot get far enough to install anything — so the
+usual escape hatch of running `npm install --force` is not available, because npm is
+not there yet.
+
+Do not add a platform-specific `@rollup/*` (or `@esbuild/*`, or `@napi-rs/*`) package
+to `dependencies`. `rollup` already pulls the right binary for the current platform on
+its own. If a contributor added one to work around a missing-binary error, remove it
+and reinstall — the underlying problem is a stale `node_modules`, not a missing
+dependency.
+
+---
+
 ## Configuration
 
 All settings live in `.env` (see `.env.example`):

@@ -25,7 +25,6 @@
   },
   "dependencies": {
     "@hono/node-server": "^2.1.1",
-    "@rollup/rollup-win32-x64-msvc": "^4.63.5",
     "@tailwindcss/vite": "^4.2.1",
     "@tanstack/react-query": "^5.90.21",
     "@tanstack/react-router": "^1.167.3",
